@@ -1,0 +1,2439 @@
+<!doctype html>
+<!--
+  CloudLexis: a cross-cloud knowledge assistant for new solutions engineers
+  ------------------------------------------------------------------------
+  Single-file prototype. Open this file in any modern browser; no server,
+  no install and no internet connection are needed.
+
+  What runs for real in the browser:
+    - tokenisation that keeps product codes (e.g. m5.2xlarge) in one piece
+    - rule-based entity recognition (providers, services, SKUs, specs, regions)
+    - entity linking to a cross-cloud glossary, with fuzzy matching for typos
+    - query rewriting, BM25 keyword search, entity-based ranking and
+      reciprocal rank fusion
+    - document chunking, index-time entity tagging and PII redaction
+    - spec matching for instance sizing and a small offline evaluation
+
+  What is simulated:
+    - the intent classifier is a keyword model standing in for DistilBERT
+    - the answer text is built from retrieved sentences with templates;
+      no large language model is called
+    - dense (embedding) retrieval and the cross-encoder reranker are shown
+      as planned steps only
+
+  All data is synthetic. "Nimbus Cloud" is a fictional cloud provider.
+  AWS, Microsoft Azure and Google Cloud product names are trademarks of their
+  owners and appear only to show how terms map between providers.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CloudLexis</title>
+<meta name="description" content="Prototype of a cross-cloud knowledge assistant that helps new solutions engineers find answers in their company's own product terms.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231F4D40'/%3E%3Cpath d='M6 21c3-7 7-10 10-10s7 3 10 10' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Cpath d='M6 21h20M11 21v-4M16 21v-6M21 21v-4' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+/* =====================================================================
+   1. Design tokens (light theme first, dark theme below)
+   ===================================================================== */
+:root {
+  color-scheme: light;
+  --bg: #f5f6f4;
+  --surface: #ffffff;
+  --surface-2: #f0f3f1;
+  --surface-3: #e7ece9;
+  --border: #e0e5e2;
+  --border-strong: #cdd5d0;
+  --text: #17211d;
+  --text-2: #46534d;
+  --muted: #6b7872;
+  --primary: #1f4d40;
+  --primary-600: #2a6b59;
+  --primary-50: #e7f1ed;
+  --primary-ink: #ffffff;
+  --accent: #b8305a;
+  --accent-50: #fbe9ef;
+  --ok: #24764f;
+  --ok-50: #e3f3ea;
+  --warn: #9a6200;
+  --warn-50: #fdf1dc;
+  --danger: #b42318;
+  --danger-50: #fdecea;
+  /* entity label colours (used for marks and chips) */
+  --ent-provider: #3355c8;
+  --ent-provider-bg: #e8edfc;
+  --ent-service: #1f6b55;
+  --ent-service-bg: #e1f2ec;
+  --ent-sku: #b8305a;
+  --ent-sku-bg: #fbe6ed;
+  --ent-spec: #8a5a00;
+  --ent-spec-bg: #fcefd6;
+  --ent-region: #6a45d1;
+  --ent-region-bg: #efe9fc;
+  /* chart series (validated categorical pair) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --shadow: 0 1px 2px rgba(16, 32, 26, .06), 0 1px 1px rgba(16, 32, 26, .04);
+  --shadow-lg: 0 10px 30px rgba(16, 32, 26, .12);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111614; --surface: #171d1a; --surface-2: #1d2420; --surface-3: #252e29;
+    --border: #2a332e; --border-strong: #38443e;
+    --text: #e9efeb; --text-2: #c2ccc6; --muted: #93a19a;
+    --primary: #5fb39a; --primary-600: #7cc6af; --primary-50: #1d2e28; --primary-ink: #0d1411;
+    --accent: #e0789a; --accent-50: #33202a;
+    --ok: #5cc28f; --ok-50: #17291f; --warn: #e2a640; --warn-50: #2c2414; --danger: #f07a6e; --danger-50: #2f1a18;
+    --ent-provider: #8ea6f5; --ent-provider-bg: #1d2440;
+    --ent-service: #6fcfae; --ent-service-bg: #15302a;
+    --ent-sku: #ee8fae; --ent-sku-bg: #3a1c28;
+    --ent-spec: #e8b45c; --ent-spec-bg: #33280f;
+    --ent-region: #b39cf3; --ent-region-bg: #2a2142;
+    --series-1: #3987e5; --series-2: #d95926;
+    --shadow: 0 1px 2px rgba(0,0,0,.4); --shadow-lg: 0 10px 30px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111614; --surface: #171d1a; --surface-2: #1d2420; --surface-3: #252e29;
+  --border: #2a332e; --border-strong: #38443e;
+  --text: #e9efeb; --text-2: #c2ccc6; --muted: #93a19a;
+  --primary: #5fb39a; --primary-600: #7cc6af; --primary-50: #1d2e28; --primary-ink: #0d1411;
+  --accent: #e0789a; --accent-50: #33202a;
+  --ok: #5cc28f; --ok-50: #17291f; --warn: #e2a640; --warn-50: #2c2414; --danger: #f07a6e; --danger-50: #2f1a18;
+  --ent-provider: #8ea6f5; --ent-provider-bg: #1d2440;
+  --ent-service: #6fcfae; --ent-service-bg: #15302a;
+  --ent-sku: #ee8fae; --ent-sku-bg: #3a1c28;
+  --ent-spec: #e8b45c; --ent-spec-bg: #33280f;
+  --ent-region: #b39cf3; --ent-region-bg: #2a2142;
+  --series-1: #3987e5; --series-2: #d95926;
+  --shadow: 0 1px 2px rgba(0,0,0,.4); --shadow-lg: 0 10px 30px rgba(0,0,0,.5);
+}
+
+/* =====================================================================
+   2. Base
+   ===================================================================== */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); overflow-x: hidden; font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, h4 { margin: 0; line-height: 1.25; }
+h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+h2 { font-size: 16px; font-weight: 650; }
+h3 { font-size: 14px; font-weight: 650; }
+p { margin: 0; }
+a { color: var(--primary-600); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+::selection { background: var(--primary-50); }
+.ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ic-sm { width: 14px; height: 14px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* =====================================================================
+   3. App shell: sidebar, top bar, main area
+   ===================================================================== */
+.app { display: grid; grid-template-columns: 236px 1fr; min-height: 100vh; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 18px 14px; display: flex; flex-direction: column; gap: 18px; position: sticky; top: 0; height: 100vh; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px; }
+.brand-name { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
+.brand-tag { font-size: 11px; color: var(--muted); }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 10px 10px 6px; }
+.nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-sm); color: var(--text-2); font-weight: 500; }
+.nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
+.nav a.active { background: var(--primary-50); color: var(--primary); }
+.nav a .count { margin-left: auto; font-size: 11px; color: var(--muted); }
+.side-foot { margin-top: auto; border-top: 1px solid var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.index-status { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-top: 5px; flex: none; }
+
+.main-wrap { min-width: 0; display: flex; flex-direction: column; }
+.topbar { height: 60px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 14px; padding: 0 24px; position: sticky; top: 0; z-index: 5; }
+.menu-btn { display: none; }
+.global-search { flex: 1; max-width: 560px; display: flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 0 12px; height: 38px; color: var(--muted); }
+.global-search input { flex: 1; border: 0; background: transparent; outline: none; color: var(--text); min-width: 0; }
+.kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; color: var(--muted); }
+.top-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.role-select { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.role-select select { height: 34px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 0 8px; font-weight: 500; color: var(--text); }
+.icon-btn { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; cursor: pointer; color: var(--text-2); }
+.icon-btn:hover { background: var(--surface-2); }
+.avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--primary); color: var(--primary-ink); display: grid; place-items: center; font-weight: 650; font-size: 12px; }
+main { padding: 24px; max-width: 1480px; width: 100%; }
+
+/* =====================================================================
+   4. Shared components
+   ===================================================================== */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.page-head .sub { color: var(--muted); margin-top: 4px; max-width: 720px; }
+.head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card-pad { padding: 18px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.card-head p { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.card-body { padding: 16px 18px; }
+.grid { display: grid; gap: 16px; }
+.g-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.g-main-side { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-weight: 550; white-space: nowrap; }
+.btn:hover { background: var(--surface-2); }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.btn-primary:hover { background: var(--primary-600); }
+.btn-ghost { background: transparent; }
+.btn-sm { height: 30px; padding: 0 10px; font-size: 12.5px; border-radius: 8px; }
+.btn:disabled { opacity: .55; cursor: default; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.chip:hover { border-color: var(--border-strong); color: var(--text); }
+.chip.active { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.suggest { height: auto; min-height: 30px; padding: 6px 12px; white-space: normal; text-align: left; border-radius: 10px; }
+
+.badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600; background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.badge-ok { background: var(--ok-50); color: var(--ok); }
+.badge-warn { background: var(--warn-50); color: var(--warn); }
+.badge-danger { background: var(--danger-50); color: var(--danger); }
+.badge-primary { background: var(--primary-50); color: var(--primary); }
+.badge-accent { background: var(--accent-50); color: var(--accent); }
+.badge-outline { background: transparent; border: 1px solid var(--border-strong); }
+
+.input, .textarea, .select { width: 100%; border: 1px solid var(--border); background: var(--surface); border-radius: 9px; padding: 8px 12px; outline: none; }
+.input { height: 38px; }
+.textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
+.input:focus, .textarea:focus, .select:focus, .global-search:focus-within { border-color: var(--primary-600); box-shadow: 0 0 0 3px var(--primary-50); }
+
+.table-wrap { overflow-x: auto; }
+table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); white-space: nowrap; }
+.table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.table tr:last-child td { border-bottom: 0; }
+.table tr.clickable { cursor: pointer; }
+.table tr.clickable:hover td { background: var(--surface-2); }
+.table tr.selected td { background: var(--primary-50); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.nowrap { white-space: nowrap; }
+.spec-grid .table td, .spec-grid .table th { padding-left: 10px; padding-right: 10px; }
+
+.callout { display: flex; gap: 10px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); color: var(--text-2); font-size: 13px; border: 1px solid var(--border); }
+.callout .ic { margin-top: 1px; color: var(--primary-600); }
+.callout-warn { background: var(--warn-50); border-color: transparent; color: var(--text); }
+.callout-warn .ic { color: var(--warn); }
+
+.stat { padding: 16px 18px; }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.toggle { position: relative; width: 38px; height: 22px; flex: none; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle span { position: absolute; inset: 0; background: var(--border-strong); border-radius: 999px; transition: .15s; cursor: pointer; }
+.toggle span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.toggle input:checked + span { background: var(--primary-600); }
+.toggle input:checked + span::after { transform: translateX(16px); }
+.toggle input:disabled + span { opacity: .6; cursor: not-allowed; }
+
+.bar { height: 8px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--primary-600); border-radius: 999px; }
+
+/* entity marks used in queries, documents and the translator */
+.ent { border-radius: 4px; padding: 0 3px; font-weight: 550; }
+.ent small { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; margin-left: 3px; opacity: .85; }
+.ent-PROVIDER { background: var(--ent-provider-bg); color: var(--ent-provider); }
+.ent-SERVICE { background: var(--ent-service-bg); color: var(--ent-service); }
+.ent-SKU { background: var(--ent-sku-bg); color: var(--ent-sku); }
+.ent-SPEC { background: var(--ent-spec-bg); color: var(--ent-spec); }
+.ent-REGION { background: var(--ent-region-bg); color: var(--ent-region); }
+.legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 13px; opacity: 0; transition: .2s; pointer-events: none; z-index: 50; box-shadow: var(--shadow-lg); }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.empty { text-align: center; color: var(--muted); padding: 28px; }
+
+/* =====================================================================
+   5. Ask page: chat and pipeline trace
+   ===================================================================== */
+.ask-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, 1fr); gap: 16px; align-items: start; }
+.chat { display: flex; flex-direction: column; min-height: calc(100vh - 176px); }
+.chat-log { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
+.welcome { padding: 8px 4px; }
+.welcome h2 { font-size: 18px; }
+.welcome > p { color: var(--muted); margin: 6px 0 18px; }
+.suggest-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.suggest-group { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 8px; }
+.suggest-group h3 { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); }
+.msg-user { align-self: flex-end; max-width: 78%; background: var(--primary); color: var(--primary-ink); padding: 10px 14px; border-radius: 14px 14px 4px 14px; }
+.msg-bot { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; }
+.bot-avatar { width: 32px; height: 32px; }
+.answer { min-width: 0; border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 14px 16px; background: var(--surface); display: flex; flex-direction: column; gap: 12px; }
+.answer-text p + p { margin-top: 8px; }
+.answer-text strong { color: var(--text); }
+.cite { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 5px; background: var(--primary-50); color: var(--primary); font-size: 11px; font-weight: 700; vertical-align: 1px; cursor: pointer; }
+.watch { display: flex; gap: 8px; background: var(--warn-50); border-radius: 9px; padding: 9px 12px; font-size: 13px; }
+.watch .ic { color: var(--warn); margin-top: 1px; }
+.map-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.map-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px 3px 4px; background: var(--surface-2); }
+.map-chip .from { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--text-2); }
+.map-chip .to { font-weight: 650; color: var(--primary); }
+.sources { display: flex; flex-direction: column; gap: 6px; }
+.source { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 10px; border: 1px solid var(--border); border-radius: 9px; font-size: 12.5px; cursor: pointer; }
+.source:hover { background: var(--surface-2); }
+.source .meta { color: var(--muted); font-size: 11.5px; }
+.answer-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 10px; }
+.answer-foot .spacer { flex: 1; }
+.answer-foot .icon-btn { width: 30px; height: 30px; }
+.composer { display: flex; gap: 8px; padding: 14px 16px 6px; border-top: 1px solid var(--border); }
+.composer input { flex: 1; height: 42px; border: 1px solid var(--border); border-radius: 10px; padding: 0 14px; background: var(--surface); outline: none; }
+.composer input:focus { border-color: var(--primary-600); box-shadow: 0 0 0 3px var(--primary-50); }
+.composer .btn { height: 42px; }
+.composer-hint { padding: 0 16px 12px; font-size: 11.5px; color: var(--muted); }
+.typing { display: inline-flex; gap: 4px; padding: 12px 14px; }
+.typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1s infinite; }
+.typing i:nth-child(2) { animation-delay: .15s; } .typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+.trace { position: sticky; top: 84px; max-height: calc(100vh - 108px); display: flex; flex-direction: column; }
+.trace-body { overflow-y: auto; padding: 6px 18px 18px; }
+.step { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
+.step:last-child { border-bottom: 0; }
+.step-n { width: 24px; height: 24px; border-radius: 50%; background: var(--primary-50); color: var(--primary); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.step h3 { font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.step .what { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+.step .planned { font-size: 11.5px; color: var(--muted); margin-top: 8px; display: flex; gap: 6px; }
+.tokens { display: flex; flex-wrap: wrap; gap: 4px; }
+.tok { font-family: var(--mono); font-size: 11.5px; padding: 2px 6px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); }
+.tok.protected { border-color: var(--accent); color: var(--accent); background: var(--accent-50); }
+.tok.stop { opacity: .45; text-decoration: line-through; }
+.broken { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.broken .tok { opacity: .8; }
+.intent-row { display: grid; grid-template-columns: 130px 1fr 40px; gap: 8px; align-items: center; font-size: 12px; margin: 4px 0; }
+.intent-row.top { font-weight: 650; }
+.qtext { line-height: 2; font-size: 13px; }
+.link-row { display: grid; grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr); gap: 6px; align-items: center; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.link-row:last-child { border-bottom: 0; }
+.link-row .how { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); }
+.rewrite { font-size: 12.5px; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; line-height: 1.7; }
+.rewrite mark { background: var(--primary-50); color: var(--primary); border-radius: 4px; padding: 0 3px; font-weight: 600; }
+.mini-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mini-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.mini-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.mini-table tr.used td { background: var(--primary-50); }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 3px 0; }
+.check .ic { width: 16px; height: 16px; margin-top: 1px; }
+.check.ok .ic { color: var(--ok); } .check.warn .ic { color: var(--warn); } .check.bad .ic { color: var(--danger); }
+details.prompt summary { cursor: pointer; font-size: 12px; color: var(--primary-600); margin-top: 8px; }
+details.prompt pre { white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 8px; font-size: 11.5px; max-height: 240px; overflow: auto; }
+
+/* =====================================================================
+   6. Other pages
+   ===================================================================== */
+.translated { font-size: 14px; line-height: 2; padding: 12px 14px; background: var(--surface-2); border-radius: 10px; min-height: 52px; }
+.translated mark { background: var(--primary-50); color: var(--primary); font-weight: 650; border-radius: 4px; padding: 1px 4px; }
+.translated s { color: var(--muted); }
+.provider-cell { line-height: 1.35; }
+.provider-cell .alias { font-size: 11.5px; color: var(--muted); }
+.nimbus-cell { font-weight: 650; color: var(--primary); }
+.hit { background: var(--warn-50); border-radius: 3px; }
+.detail-title { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+.tag-list { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.spec-parsed { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.spec-parsed div { background: var(--surface-2); border-radius: 9px; padding: 9px 11px; }
+.spec-parsed b { display: block; font-size: 16px; }
+.spec-parsed span { font-size: 11.5px; color: var(--muted); }
+.match { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.match:last-child { border-bottom: 0; }
+.match .code { font-family: var(--mono); font-weight: 700; font-size: 15px; }
+.match .why { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.match .score { text-align: right; }
+.match .score b { font-size: 20px; }
+.best-label { font-size: 11px; font-weight: 700; color: var(--ok); text-transform: uppercase; letter-spacing: .05em; }
+
+.pipeline { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.pstep { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface-2); position: relative; }
+.pstep b { display: block; font-size: 12.5px; }
+.pstep span { font-size: 11.5px; color: var(--muted); }
+.pstep .badge { margin-top: 6px; }
+.chunk { border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-size: 13px; line-height: 1.75; }
+.chunk + .chunk { margin-top: 10px; }
+.chunk-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+pre.json { background: var(--surface-2); border-radius: 9px; padding: 10px 12px; overflow: auto; font-size: 11.5px; margin: 0; }
+.redacted { background: var(--accent-50); color: var(--accent); border-radius: 4px; padding: 0 4px; font-weight: 650; font-family: var(--mono); font-size: 12px; }
+
+.ring-wrap { display: flex; gap: 18px; align-items: center; }
+.week { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.week + .week { margin-top: 12px; }
+.week-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--surface-2); }
+.task { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; }
+.task input { margin-top: 3px; accent-color: var(--primary-600); width: 15px; height: 15px; }
+.task.done .t { text-decoration: line-through; color: var(--muted); }
+.task .link { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.flash { border: 1px solid var(--border); border-radius: 12px; padding: 18px; min-height: 150px; display: flex; flex-direction: column; justify-content: center; gap: 8px; background: linear-gradient(135deg, var(--primary-50), var(--surface)); cursor: pointer; }
+.flash .big { font-size: 20px; font-weight: 650; }
+.quiz-q { font-weight: 600; margin-bottom: 10px; }
+.quiz-opts { display: grid; gap: 6px; }
+.quiz-opt { text-align: left; border: 1px solid var(--border); background: var(--surface); padding: 8px 12px; border-radius: 9px; cursor: pointer; }
+.quiz-opt:hover { background: var(--surface-2); }
+.quiz-opt.right { border-color: var(--ok); background: var(--ok-50); }
+.quiz-opt.wrong { border-color: var(--danger); background: var(--danger-50); }
+
+.chart-box { position: relative; }
+.chart-box svg { display: block; width: 100%; height: auto; }
+.chart-box .axis text { fill: var(--muted); font-size: 11px; }
+.chart-box .grid-line { stroke: var(--border); stroke-width: 1; }
+.chart-box .val { fill: var(--text-2); font-size: 11px; font-weight: 600; }
+.chart-tip { position: absolute; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12px; padding: 6px 9px; border-radius: 7px; opacity: 0; transition: opacity .1s; white-space: nowrap; z-index: 3; }
+.rank { font-variant-numeric: tabular-nums; font-weight: 650; }
+.rank.r1 { color: var(--ok); } .rank.miss { color: var(--danger); font-weight: 500; }
+
+.setting { display: flex; gap: 14px; align-items: flex-start; padding: 13px 0; border-bottom: 1px solid var(--border); }
+.setting:last-child { border-bottom: 0; }
+.setting .t { font-weight: 600; }
+.setting .d { color: var(--muted); font-size: 12.5px; }
+.setting .toggle { margin-left: auto; margin-top: 2px; }
+
+/* =====================================================================
+   7. Responsive layout
+   ===================================================================== */
+@media (max-width: 1180px) {
+  .ask-grid { grid-template-columns: minmax(0, 1fr); }
+  .trace { position: static; max-height: none; }
+  .pipeline { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .g-main-side, .spec-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: fixed; z-index: 20; left: 0; top: 0; width: 260px; transform: translateX(-100%); transition: .2s; box-shadow: var(--shadow-lg); }
+  .sidebar.open { transform: none; }
+  .menu-btn { display: grid; }
+  .g-2, .g-3, .g-4, .suggest-groups { grid-template-columns: minmax(0, 1fr); }
+  .spec-parsed { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .role-select label { display: none; }
+  main { padding: 16px; }
+  .topbar { padding: 0 16px; }
+  .global-search .kbd { display: none; }
+  .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .match { grid-template-columns: minmax(0, 1fr); }
+  .trace-body .mini-table { display: block; overflow-x: auto; }
+  .match .score { text-align: left; }
+}
+@media (max-width: 560px) {
+  .global-search { display: none; }
+  .msg-user { max-width: 92%; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Left navigation -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--primary)"/><path d="M6 21c3-7 7-10 10-10s7 3 10 10" stroke="var(--primary-ink)" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M6 21h20M11 21v-4M16 21v-6M21 21v-4" stroke="var(--primary-ink)" stroke-width="2" stroke-linecap="round"/></svg>
+      <div><div class="brand-name">CloudLexis</div><div class="brand-tag">Nimbus Cloud · internal</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <div class="nav-label">Work</div>
+      <a href="#/ask" data-page="ask"><svg class="ic" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Ask</a>
+      <a href="#/translator" data-page="translator"><svg class="ic" viewBox="0 0 24 24"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>Term Translator</a>
+      <a href="#/spec" data-page="spec"><svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>Spec Matcher</a>
+      <div class="nav-label">Learn</div>
+      <a href="#/onboarding" data-page="onboarding"><svg class="ic" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>Onboarding<span class="count" id="navProgress"></span></a>
+      <a href="#/kb" data-page="kb"><svg class="ic" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>Knowledge Base</a>
+      <div class="nav-label">Quality</div>
+      <a href="#/eval" data-page="eval"><svg class="ic" viewBox="0 0 24 24"><path d="M3 21h18M6 17v-6M11 17V6M16 17v-4"/></svg>Evaluation</a>
+      <a href="#/trust" data-page="trust"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>Trust &amp; Safety</a>
+    </nav>
+    <div class="side-foot">
+      <div class="index-status"><span class="dot"></span><div><b>Index up to date</b><br><span class="muted" id="indexInfo"></span></div></div>
+      <div class="small muted">Prototype · demo data only</div>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <!-- Top bar: global search, role switcher, theme -->
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu"><svg class="ic" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+      <form class="global-search" id="globalSearch">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+        <input id="globalInput" placeholder="Ask anything, e.g. what is our version of S3 Glacier?" aria-label="Ask CloudLexis">
+        <span class="kbd">/</span>
+      </form>
+      <div class="top-right">
+        <div class="role-select"><label for="roleSel">Viewing as</label>
+          <select id="roleSel">
+            <option value="se">Solutions Engineer</option>
+            <option value="support">Support Engineer</option>
+            <option value="am">Account Manager</option>
+          </select>
+        </div>
+        <button class="icon-btn" id="themeBtn" aria-label="Switch theme"><svg class="ic" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></button>
+        <div class="avatar" title="Demo user">NS</div>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1"></main>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script id="cl-data">
+/* =====================================================================
+   CloudLexis demo data
+   ---------------------------------------------------------------------
+   Everything below is synthetic. Nimbus Cloud is a fictional provider,
+   so its product names, prices and policies are invented for the demo.
+   Public AWS, Azure and Google Cloud names and instance specs are used
+   only to show how terms map; check the official docs before real use.
+   ===================================================================== */
+
+const PROVIDERS = { aws: 'AWS', azure: 'Azure', gcp: 'Google Cloud', nimbus: 'Nimbus Cloud' };
+
+const ROLES = {
+  se: 'Solutions Engineer',
+  support: 'Support Engineer',
+  am: 'Account Manager'
+};
+
+/* ---------------------------------------------------------------------
+   Cross-cloud glossary. One entry = one concept.
+   aliases  : the ways people write the name (lower case); used by the
+              entity recogniser and the linker.
+   generic  : vendor-neutral words for the same idea.
+   doc      : the main knowledge-base document for the concept.
+   watch    : a short "watch out" note shown with answers.
+   --------------------------------------------------------------------- */
+const CONCEPTS = [
+  { id: 'compute.vm', category: 'Compute', plain: 'Virtual servers that customers rent and pay for by the second or hour.',
+    aws: { name: 'Amazon EC2', aliases: ['ec2', 'amazon ec2', 'elastic compute cloud'] },
+    azure: { name: 'Azure Virtual Machines', aliases: ['azure virtual machines', 'azure virtual machine', 'azure vm', 'azure vms'] },
+    gcp: { name: 'Compute Engine', aliases: ['compute engine', 'google compute engine', 'gce'] },
+    nimbus: { name: 'Nimbus Elastic Server (NES)', short: 'NES', aliases: ['nimbus elastic server', 'elastic server', 'nes'] },
+    generic: ['virtual machine', 'virtual machines', 'vm', 'vms', 'instance type', 'virtual server'],
+    doc: 'D01', watch: 'NES bills per second with a one-minute minimum. Instance names follow nx-{family}{generation}-{vCPU}x{memory}.' },
+
+  { id: 'compute.serverless', category: 'Compute', plain: 'Run small pieces of code on events without managing any server.',
+    aws: { name: 'AWS Lambda', aliases: ['lambda', 'aws lambda', 'lambda function', 'lambda functions'] },
+    azure: { name: 'Azure Functions', aliases: ['azure functions', 'azure function', 'function app'] },
+    gcp: { name: 'Cloud Run functions', aliases: ['cloud run functions', 'cloud functions', 'google cloud functions'] },
+    nimbus: { name: 'Nimbus Pulse Functions', short: 'Pulse Functions', aliases: ['nimbus pulse functions', 'pulse functions', 'pulse function'] },
+    generic: ['serverless', 'function as a service', 'faas'],
+    doc: 'D09', watch: 'A Pulse Functions call can run for up to 20 minutes with up to 8 GB of memory. Longer jobs belong on NKS or NES.' },
+
+  { id: 'compute.k8s', category: 'Containers', plain: 'Managed Kubernetes clusters for running containers.',
+    aws: { name: 'Amazon EKS', aliases: ['eks', 'amazon eks', 'elastic kubernetes service'] },
+    azure: { name: 'Azure Kubernetes Service (AKS)', aliases: ['aks', 'azure kubernetes service'] },
+    gcp: { name: 'Google Kubernetes Engine (GKE)', aliases: ['gke', 'google kubernetes engine'] },
+    nimbus: { name: 'Nimbus Kube Service (NKS)', short: 'NKS', aliases: ['nimbus kube service', 'kube service', 'nks'] },
+    generic: ['kubernetes', 'k8s', 'managed kubernetes'],
+    doc: 'D10', watch: 'The first NKS control plane in each account is free. Extra clusters cost 0.10 USD per hour.' },
+
+  { id: 'compute.registry', category: 'Containers', plain: 'A private store for container images.',
+    aws: { name: 'Amazon ECR', aliases: ['ecr', 'amazon ecr', 'elastic container registry'] },
+    azure: { name: 'Azure Container Registry', aliases: ['acr', 'azure container registry'] },
+    gcp: { name: 'Artifact Registry', aliases: ['artifact registry', 'gcr'] },
+    nimbus: { name: 'Nimbus Image Hub', short: 'Image Hub', aliases: ['nimbus image hub', 'image hub'] },
+    generic: ['container registry', 'docker registry', 'image registry'],
+    doc: 'D10', watch: 'Image Hub is regional. Copy images to every region where NKS clusters run.' },
+
+  { id: 'storage.object', category: 'Storage', plain: 'Store files as objects in buckets and read them over HTTP.',
+    aws: { name: 'Amazon S3', aliases: ['s3', 'amazon s3', 'simple storage service', 's3 bucket', 's3 buckets'] },
+    azure: { name: 'Azure Blob Storage', aliases: ['blob storage', 'azure blob storage', 'azure blob'] },
+    gcp: { name: 'Cloud Storage', aliases: ['cloud storage', 'google cloud storage', 'gcs'] },
+    nimbus: { name: 'Nimbus Object Store (NOS)', short: 'NOS', aliases: ['nimbus object store', 'object store', 'nos'] },
+    generic: ['object storage', 'bucket', 'buckets'],
+    doc: 'D07', watch: 'NOS has three tiers: Hot, Warm and Frozen. Bucket names are unique per region, not worldwide.' },
+
+  { id: 'storage.archive', category: 'Storage', plain: 'Very cheap storage for data that is rarely read, such as old backups.',
+    aws: { name: 'Amazon S3 Glacier', aliases: ['glacier', 's3 glacier', 'glacier deep archive', 'deep archive'] },
+    azure: { name: 'Blob Storage Archive tier', aliases: ['archive tier', 'azure archive', 'archive access tier'] },
+    gcp: { name: 'Cloud Storage Archive class', aliases: ['archive class', 'archive storage class'] },
+    nimbus: { name: 'NOS Frozen tier', short: 'Frozen tier', aliases: ['nos frozen tier', 'frozen tier', 'nos frozen'] },
+    generic: ['archive storage', 'cold storage', 'long-term archive', 'archive'],
+    doc: 'D08', watch: 'A restore from the Frozen tier takes 3 to 12 hours, and data must stay for at least 180 days.' },
+
+  { id: 'storage.block', category: 'Storage', plain: 'Disks that attach to one virtual server.',
+    aws: { name: 'Amazon EBS', aliases: ['ebs', 'amazon ebs', 'elastic block store', 'ebs volume', 'ebs volumes'] },
+    azure: { name: 'Azure Managed Disks', aliases: ['managed disks', 'managed disk', 'azure disk', 'azure disks'] },
+    gcp: { name: 'Persistent Disk', aliases: ['persistent disk', 'persistent disks'] },
+    nimbus: { name: 'Nimbus Block Disk (NBD)', short: 'NBD', aliases: ['nimbus block disk', 'block disk', 'nbd'] },
+    generic: ['block storage', 'disk', 'disks', 'volume', 'volumes'],
+    doc: 'D11', watch: 'NBD Performance SSD reaches 50,000 IOPS only on instances with 8 or more vCPU.' },
+
+  { id: 'storage.file', category: 'Storage', plain: 'A shared file system that many servers can use at the same time.',
+    aws: { name: 'Amazon EFS', aliases: ['efs', 'amazon efs', 'elastic file system'] },
+    azure: { name: 'Azure Files', aliases: ['azure files', 'azure file share'] },
+    gcp: { name: 'Filestore', aliases: ['filestore'] },
+    nimbus: { name: 'Nimbus File Share', short: 'File Share', aliases: ['nimbus file share', 'file share'] },
+    generic: ['nfs', 'shared file system', 'file storage'],
+    doc: 'D11', watch: 'File Share supports NFS v4.1 only. SMB is on the roadmap.' },
+
+  { id: 'network.vpc', category: 'Networking', plain: 'A private, isolated network for a customer’s cloud resources.',
+    aws: { name: 'Amazon VPC', aliases: ['vpc', 'amazon vpc', 'aws vpc'] },
+    azure: { name: 'Azure Virtual Network (VNet)', aliases: ['vnet', 'vnets', 'virtual network', 'azure virtual network'] },
+    gcp: { name: 'VPC network', aliases: ['vpc', 'vpc network', 'gcp vpc', 'google vpc'] },
+    nimbus: { name: 'Nimbus Private Network (NPN)', short: 'NPN', aliases: ['nimbus private network', 'private network', 'npn', 'npns'] },
+    generic: ['subnet', 'subnets', 'peering', 'network isolation'],
+    doc: 'D12', watch: 'An NPN is regional, like an AWS VPC or an Azure VNet. A Google Cloud VPC network is global, so subnet plans need to change.' },
+
+  { id: 'network.lb', category: 'Networking', plain: 'Spreads incoming traffic across many servers.',
+    aws: { name: 'Elastic Load Balancing (ELB)', aliases: ['elb', 'elastic load balancing', 'alb', 'nlb', 'application load balancer', 'network load balancer'] },
+    azure: { name: 'Azure Load Balancer', aliases: ['azure load balancer', 'application gateway'] },
+    gcp: { name: 'Cloud Load Balancing', aliases: ['cloud load balancing'] },
+    nimbus: { name: 'Nimbus Traffic Balancer (NTB)', short: 'NTB', aliases: ['nimbus traffic balancer', 'traffic balancer', 'ntb'] },
+    generic: ['load balancer', 'load balancing'],
+    doc: 'D13', watch: 'One NTB runs in Layer 4 or Layer 7 mode, so customers do not need two products as with ALB and NLB.' },
+
+  { id: 'network.cdn', category: 'Networking', plain: 'Caches content close to users so websites load faster.',
+    aws: { name: 'Amazon CloudFront', aliases: ['cloudfront', 'amazon cloudfront'] },
+    azure: { name: 'Azure Front Door', aliases: ['front door', 'azure front door', 'azure cdn'] },
+    gcp: { name: 'Cloud CDN', aliases: ['cloud cdn'] },
+    nimbus: { name: 'Nimbus Edge CDN', short: 'Edge CDN', aliases: ['nimbus edge cdn', 'edge cdn', 'nimbus cdn'] },
+    generic: ['cdn', 'content delivery network', 'edge cache'],
+    doc: 'D14', watch: 'Edge CDN has 120 edge locations. Check coverage for customers in Africa and South America.' },
+
+  { id: 'network.dns', category: 'Networking', plain: 'Turns domain names into IP addresses.',
+    aws: { name: 'Amazon Route 53', aliases: ['route 53', 'route53', 'amazon route 53'] },
+    azure: { name: 'Azure DNS', aliases: ['azure dns'] },
+    gcp: { name: 'Cloud DNS', aliases: ['cloud dns'] },
+    nimbus: { name: 'Nimbus DNS', short: 'Nimbus DNS', aliases: ['nimbus dns'] },
+    generic: ['dns', 'hosted zone', 'domain name'],
+    doc: 'D14', watch: 'Nimbus DNS does not support latency-based routing yet. Use weighted records instead.' },
+
+  { id: 'db.relational', category: 'Databases', plain: 'Managed MySQL or PostgreSQL databases with backups and failover.',
+    aws: { name: 'Amazon RDS', aliases: ['rds', 'amazon rds', 'relational database service'] },
+    azure: { name: 'Azure SQL Database', aliases: ['azure sql', 'azure sql database', 'azure database for postgresql', 'azure database for mysql'] },
+    gcp: { name: 'Cloud SQL', aliases: ['cloud sql'] },
+    nimbus: { name: 'Nimbus Managed SQL (NMS)', short: 'NMS', aliases: ['nimbus managed sql', 'managed sql', 'nms'] },
+    generic: ['managed database', 'relational database', 'mysql', 'postgresql', 'postgres'],
+    doc: 'D15', watch: 'NMS runs MySQL and PostgreSQL only. For SQL Server, use NES with a licence-included image.' },
+
+  { id: 'db.warehouse', category: 'Analytics', plain: 'A data warehouse for running SQL over very large data sets.',
+    aws: { name: 'Amazon Redshift', aliases: ['redshift', 'amazon redshift'] },
+    azure: { name: 'Azure Synapse Analytics', aliases: ['synapse', 'azure synapse', 'synapse analytics'] },
+    gcp: { name: 'BigQuery', aliases: ['bigquery', 'bq'] },
+    nimbus: { name: 'Nimbus Lakehouse', short: 'Lakehouse', aliases: ['nimbus lakehouse', 'lakehouse'] },
+    generic: ['data warehouse', 'warehouse'],
+    doc: 'D16', watch: 'Lakehouse bills per TB scanned, like BigQuery on-demand, not per node like a provisioned Redshift cluster.' },
+
+  { id: 'msg.queue', category: 'Integration', plain: 'Passes messages between services so they can work at their own pace.',
+    aws: { name: 'Amazon SQS', aliases: ['sqs', 'amazon sqs', 'simple queue service'] },
+    azure: { name: 'Azure Service Bus', aliases: ['service bus', 'azure service bus'] },
+    gcp: { name: 'Pub/Sub', aliases: ['pub/sub', 'pubsub', 'cloud pub/sub'] },
+    nimbus: { name: 'Nimbus Queue', short: 'Nimbus Queue', aliases: ['nimbus queue'] },
+    generic: ['message queue', 'queue', 'queues', 'messaging'],
+    doc: 'D17', watch: 'Nimbus Queue keeps messages for up to 7 days. For fan-out to many consumers, use Queue topics.' },
+
+  { id: 'ops.monitor', category: 'Management', plain: 'Collects metrics and logs and sends alerts.',
+    aws: { name: 'Amazon CloudWatch', aliases: ['cloudwatch', 'amazon cloudwatch'] },
+    azure: { name: 'Azure Monitor', aliases: ['azure monitor', 'log analytics'] },
+    gcp: { name: 'Cloud Monitoring', aliases: ['cloud monitoring', 'cloud logging', 'stackdriver'] },
+    nimbus: { name: 'Nimbus Watch', short: 'Nimbus Watch', aliases: ['nimbus watch'] },
+    generic: ['monitoring', 'metrics', 'alarms', 'dashboards'],
+    doc: 'D18', watch: 'Nimbus Watch keeps metrics for 15 months and logs for 30 days by default.' },
+
+  { id: 'security.iam', category: 'Security', plain: 'Controls who can do what in a cloud account.',
+    aws: { name: 'AWS IAM', aliases: ['iam', 'aws iam', 'iam role', 'iam roles', 'iam policy'] },
+    azure: { name: 'Microsoft Entra ID', aliases: ['entra id', 'entra', 'azure ad', 'azure active directory', 'azure rbac'] },
+    gcp: { name: 'Cloud IAM', aliases: ['iam', 'cloud iam', 'gcp iam'] },
+    nimbus: { name: 'Nimbus Access Manager (NAM)', short: 'NAM', aliases: ['nimbus access manager', 'access manager', 'nam'] },
+    generic: ['permissions', 'access control', 'least privilege', 'sso'],
+    doc: 'D19', watch: 'In Azure, identity (Entra ID) and resource access (Azure RBAC) are separate. NAM covers both.' },
+
+  { id: 'security.kms', category: 'Security', plain: 'Creates and protects encryption keys.',
+    aws: { name: 'AWS KMS', aliases: ['kms', 'aws kms', 'key management service'] },
+    azure: { name: 'Azure Key Vault', aliases: ['key vault', 'azure key vault'] },
+    gcp: { name: 'Cloud KMS', aliases: ['kms', 'cloud kms'] },
+    nimbus: { name: 'Nimbus Crypto Keys (NCK)', short: 'NCK', aliases: ['nimbus crypto keys', 'crypto keys', 'nck'] },
+    generic: ['encryption keys', 'key management', 'customer managed keys', 'cmk'],
+    doc: 'D20', watch: 'NCK keys are regional and cannot be exported. Plan key copies before a multi-region design.' }
+];
+
+/* Regions: the closest Nimbus region for common public cloud regions. */
+const REGIONS = [
+  { nimbus: 'nb-me-1', city: 'Dubai', aws: ['me-central-1'], azure: ['uaenorth'], gcp: ['me-central1'] },
+  { nimbus: 'nb-eu-1', city: 'Frankfurt', aws: ['eu-central-1'], azure: ['germanywestcentral'], gcp: ['europe-west3'] },
+  { nimbus: 'nb-eu-2', city: 'London', aws: ['eu-west-2'], azure: ['uksouth'], gcp: ['europe-west2'] },
+  { nimbus: 'nb-us-1', city: 'Virginia', aws: ['us-east-1'], azure: ['eastus'], gcp: ['us-east4'] },
+  { nimbus: 'nb-ap-1', city: 'Singapore', aws: ['ap-southeast-1'], azure: ['southeastasia'], gcp: ['asia-southeast1'] },
+  { nimbus: 'nb-ap-2', city: 'Mumbai', aws: ['ap-south-1'], azure: ['centralindia'], gcp: ['asia-south1'] }
+];
+
+/* Nimbus Elastic Server instance types (fictional list prices, USD per hour). */
+const FAMILY_NAMES = { gp: 'General purpose', cp: 'Compute optimised', mo: 'Memory optimised', ac: 'Accelerated (GPU)' };
+const NIMBUS_SKUS = [
+  { code: 'nx-gp3-2x8',      family: 'gp', vcpu: 2,  mem: 8,   gpu: 0, net: 'up to 5 Gbps',    price: 0.090 },
+  { code: 'nx-gp3-4x16',     family: 'gp', vcpu: 4,  mem: 16,  gpu: 0, net: 'up to 7.5 Gbps',  price: 0.180 },
+  { code: 'nx-gp3-8x32',     family: 'gp', vcpu: 8,  mem: 32,  gpu: 0, net: 'up to 12.5 Gbps', price: 0.360 },
+  { code: 'nx-gp3-16x64',    family: 'gp', vcpu: 16, mem: 64,  gpu: 0, net: 'up to 15 Gbps',   price: 0.720 },
+  { code: 'nx-gp3-32x128',   family: 'gp', vcpu: 32, mem: 128, gpu: 0, net: 'up to 25 Gbps',   price: 1.440 },
+  { code: 'nx-cp3-4x8',      family: 'cp', vcpu: 4,  mem: 8,   gpu: 0, net: 'up to 10 Gbps',   price: 0.155 },
+  { code: 'nx-cp3-8x16',     family: 'cp', vcpu: 8,  mem: 16,  gpu: 0, net: 'up to 12.5 Gbps', price: 0.310 },
+  { code: 'nx-cp3-16x32',    family: 'cp', vcpu: 16, mem: 32,  gpu: 0, net: 'up to 20 Gbps',   price: 0.620 },
+  { code: 'nx-mo3-4x32',     family: 'mo', vcpu: 4,  mem: 32,  gpu: 0, net: 'up to 10 Gbps',   price: 0.240 },
+  { code: 'nx-mo3-8x64',     family: 'mo', vcpu: 8,  mem: 64,  gpu: 0, net: 'up to 12.5 Gbps', price: 0.480 },
+  { code: 'nx-mo3-16x128',   family: 'mo', vcpu: 16, mem: 128, gpu: 0, net: 'up to 20 Gbps',   price: 0.960 },
+  { code: 'nx-ac2-8x64-1g',  family: 'ac', vcpu: 8,  mem: 64,  gpu: 1, net: 'up to 25 Gbps',   price: 1.950 },
+  { code: 'nx-ac2-32x256-4g', family: 'ac', vcpu: 32, mem: 256, gpu: 4, net: 'up to 50 Gbps',  price: 7.800 }
+];
+
+/* Public instance specs from other providers (vCPU, memory in GiB, GPUs). */
+const COMPETITOR_SKUS = [
+  { code: 'm5.large', provider: 'aws', vcpu: 2, mem: 8, gpu: 0 },
+  { code: 'm5.xlarge', provider: 'aws', vcpu: 4, mem: 16, gpu: 0 },
+  { code: 'm5.2xlarge', provider: 'aws', vcpu: 8, mem: 32, gpu: 0 },
+  { code: 'm5.4xlarge', provider: 'aws', vcpu: 16, mem: 64, gpu: 0 },
+  { code: 'm6i.2xlarge', provider: 'aws', vcpu: 8, mem: 32, gpu: 0 },
+  { code: 'c5.xlarge', provider: 'aws', vcpu: 4, mem: 8, gpu: 0 },
+  { code: 'c5.2xlarge', provider: 'aws', vcpu: 8, mem: 16, gpu: 0 },
+  { code: 'c5.4xlarge', provider: 'aws', vcpu: 16, mem: 32, gpu: 0 },
+  { code: 'r5.xlarge', provider: 'aws', vcpu: 4, mem: 32, gpu: 0 },
+  { code: 'r5.2xlarge', provider: 'aws', vcpu: 8, mem: 64, gpu: 0 },
+  { code: 'r5.4xlarge', provider: 'aws', vcpu: 16, mem: 128, gpu: 0 },
+  { code: 'g5.2xlarge', provider: 'aws', vcpu: 8, mem: 32, gpu: 1 },
+  { code: 'Standard_D2s_v5', provider: 'azure', vcpu: 2, mem: 8, gpu: 0 },
+  { code: 'Standard_D4s_v5', provider: 'azure', vcpu: 4, mem: 16, gpu: 0 },
+  { code: 'Standard_D8s_v5', provider: 'azure', vcpu: 8, mem: 32, gpu: 0 },
+  { code: 'Standard_D16s_v5', provider: 'azure', vcpu: 16, mem: 64, gpu: 0 },
+  { code: 'Standard_F4s_v2', provider: 'azure', vcpu: 4, mem: 8, gpu: 0 },
+  { code: 'Standard_F8s_v2', provider: 'azure', vcpu: 8, mem: 16, gpu: 0 },
+  { code: 'Standard_F16s_v2', provider: 'azure', vcpu: 16, mem: 32, gpu: 0 },
+  { code: 'Standard_E4s_v5', provider: 'azure', vcpu: 4, mem: 32, gpu: 0 },
+  { code: 'Standard_E8s_v5', provider: 'azure', vcpu: 8, mem: 64, gpu: 0 },
+  { code: 'Standard_E16s_v5', provider: 'azure', vcpu: 16, mem: 128, gpu: 0 },
+  { code: 'Standard_NC8as_T4_v3', provider: 'azure', vcpu: 8, mem: 56, gpu: 1 },
+  { code: 'n2-standard-2', provider: 'gcp', vcpu: 2, mem: 8, gpu: 0 },
+  { code: 'n2-standard-4', provider: 'gcp', vcpu: 4, mem: 16, gpu: 0 },
+  { code: 'n2-standard-8', provider: 'gcp', vcpu: 8, mem: 32, gpu: 0 },
+  { code: 'n2-standard-16', provider: 'gcp', vcpu: 16, mem: 64, gpu: 0 },
+  { code: 'c2d-highcpu-8', provider: 'gcp', vcpu: 8, mem: 16, gpu: 0 },
+  { code: 'n2-highmem-4', provider: 'gcp', vcpu: 4, mem: 32, gpu: 0 },
+  { code: 'n2-highmem-8', provider: 'gcp', vcpu: 8, mem: 64, gpu: 0 },
+  { code: 'n2-highmem-16', provider: 'gcp', vcpu: 16, mem: 128, gpu: 0 },
+  { code: 'g2-standard-8', provider: 'gcp', vcpu: 8, mem: 32, gpu: 1 }
+];
+
+/* ---------------------------------------------------------------------
+   Knowledge-base documents (the "internal wiki" of Nimbus Cloud).
+   roles: who may read the document ('all' = every employee).
+   Two documents contain placeholder personal data on purpose, to show
+   that the ingestion pipeline redacts it before indexing.
+   --------------------------------------------------------------------- */
+const DOCS = [
+  { id: 'D01', title: 'Nimbus Elastic Server (NES) overview', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-12',
+    text: 'Nimbus Elastic Server (NES) is the Nimbus Cloud virtual server service. Customers pick an instance type, an image and a network, and the server starts in under a minute. NES has four families: general purpose (gp), compute optimised (cp), memory optimised (mo) and accelerated with GPUs (ac). Every NES instance runs inside a Nimbus Private Network (NPN) and keeps its system disk on Nimbus Block Disk (NBD). Billing is per second with a one-minute minimum.' },
+  { id: 'D02', title: 'How NES instance types are named', type: 'Spec sheet', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-30',
+    text: 'NES instance type names follow the pattern nx-{family}{generation}-{vCPU}x{memory}. For example, nx-gp3-8x32 is a third-generation general purpose instance with 8 vCPU and 32 GiB of memory. A suffix such as -1g or -4g gives the number of GPUs. General purpose gives 4 GiB per vCPU, compute optimised gives 2 GiB per vCPU and memory optimised gives 8 GiB per vCPU.' },
+  { id: 'D03', title: 'NES general purpose (gp3) specs and list prices', type: 'Spec sheet', roles: ['all'], sensitivity: 'Internal', updated: '2026-10-02',
+    text: 'General purpose gp3 instances suit web servers, application servers and small databases. nx-gp3-2x8 has 2 vCPU, 8 GiB memory, up to 5 Gbps network and a list price of 0.090 USD per hour. nx-gp3-4x16 has 4 vCPU, 16 GiB memory, up to 7.5 Gbps network and a list price of 0.180 USD per hour. nx-gp3-8x32 has 8 vCPU, 32 GiB memory, up to 12.5 Gbps network and a list price of 0.360 USD per hour. nx-gp3-16x64 has 16 vCPU, 64 GiB memory, up to 15 Gbps network and a list price of 0.720 USD per hour. nx-gp3-32x128 has 32 vCPU, 128 GiB memory, up to 25 Gbps network and a list price of 1.440 USD per hour.' },
+  { id: 'D04', title: 'NES compute optimised (cp3) specs and list prices', type: 'Spec sheet', roles: ['all'], sensitivity: 'Internal', updated: '2026-10-02',
+    text: 'Compute optimised cp3 instances suit batch jobs, game servers and video encoding. nx-cp3-4x8 has 4 vCPU, 8 GiB memory, up to 10 Gbps network and a list price of 0.155 USD per hour. nx-cp3-8x16 has 8 vCPU, 16 GiB memory, up to 12.5 Gbps network and a list price of 0.310 USD per hour. nx-cp3-16x32 has 16 vCPU, 32 GiB memory, up to 20 Gbps network and a list price of 0.620 USD per hour.' },
+  { id: 'D05', title: 'NES memory optimised (mo3) specs and list prices', type: 'Spec sheet', roles: ['all'], sensitivity: 'Internal', updated: '2026-10-02',
+    text: 'Memory optimised mo3 instances suit in-memory caches, large databases and SAP test systems. nx-mo3-4x32 has 4 vCPU, 32 GiB memory, up to 10 Gbps network and a list price of 0.240 USD per hour. nx-mo3-8x64 has 8 vCPU, 64 GiB memory, up to 12.5 Gbps network and a list price of 0.480 USD per hour. nx-mo3-16x128 has 16 vCPU, 128 GiB memory, up to 20 Gbps network and a list price of 0.960 USD per hour.' },
+  { id: 'D06', title: 'NES accelerated (ac2) GPU specs', type: 'Spec sheet', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-25',
+    text: 'Accelerated ac2 instances have NVIDIA GPUs for model training, inference and rendering. nx-ac2-8x64-1g has 8 vCPU, 64 GiB memory and 1 GPU with 24 GB of GPU memory, with a list price of 1.950 USD per hour. nx-ac2-32x256-4g has 32 vCPU, 256 GiB memory and 4 GPUs, with a list price of 7.800 USD per hour. GPU capacity is limited, so book large orders two weeks ahead through the capacity team.' },
+  { id: 'D07', title: 'Nimbus Object Store (NOS) overview', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-18',
+    text: 'Nimbus Object Store (NOS) stores files as objects inside buckets. It is built for 99.999999999% durability and keeps three copies across zones. Bucket names must be unique inside a region. NOS works with the common S3-compatible API, so most existing tools and SDKs work without code changes.' },
+  { id: 'D08', title: 'NOS storage tiers: Hot, Warm and Frozen', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-05',
+    text: 'NOS has three storage tiers. The Hot tier is for data that is read often and costs 0.021 USD per GB-month. The Warm tier is for data read less than once a month; it has a 30-day minimum and costs 0.012 USD per GB-month. The Frozen tier is for long-term archive and backups; it has a 180-day minimum, a restore takes 3 to 12 hours, and it costs 0.002 USD per GB-month. Lifecycle rules can move objects between tiers automatically.' },
+  { id: 'D09', title: 'Nimbus Pulse Functions overview', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-07-22',
+    text: 'Nimbus Pulse Functions runs code without managing servers. A function starts on an event, such as an HTTP request, a new object in NOS or a message in Nimbus Queue. Each call can run for up to 20 minutes with 128 MB to 8 GB of memory. Billing is per millisecond of run time plus a small fee per million calls. Supported languages are Python, Node.js, Java and Go.' },
+  { id: 'D10', title: 'Nimbus Kube Service (NKS) and Image Hub', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-28',
+    text: 'Nimbus Kube Service (NKS) is managed Kubernetes. Nimbus runs the control plane, and worker nodes are NES instances in the customer’s NPN. The first NKS control plane in each account is free; extra clusters cost 0.10 USD per hour. NKS supports the three latest Kubernetes minor versions. Container images are stored in Nimbus Image Hub, a private registry in each region.' },
+  { id: 'D11', title: 'Nimbus Block Disk (NBD) and File Share', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-11',
+    text: 'Nimbus Block Disk (NBD) gives persistent disks to NES instances. Standard SSD reaches up to 6,000 IOPS, Performance SSD reaches up to 50,000 IOPS on instances with 8 or more vCPU, and Throughput HDD suits logs and big data. Snapshots are stored in NOS. For shared files across many servers, Nimbus File Share offers NFS v4.1 storage.' },
+  { id: 'D12', title: 'Nimbus Private Network (NPN) basics', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-02',
+    text: 'A Nimbus Private Network (NPN) is an isolated network for a customer’s resources. Each NPN belongs to one region, and each subnet sits in one zone. Two NPNs connect through NPN Peering, even across accounts. Offices and data centres connect through Nimbus VPN Gateway or Nimbus Direct Link, a private line from 1 to 100 Gbps. Security groups control traffic for each instance.' },
+  { id: 'D13', title: 'Nimbus Traffic Balancer (NTB)', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-27',
+    text: 'Nimbus Traffic Balancer (NTB) spreads traffic across NES instances or NKS pods. Layer 4 mode handles TCP and UDP traffic. Layer 7 mode handles HTTP and HTTPS with path-based routing, TLS offload and a built-in web application firewall. Health checks remove unhealthy targets within 10 seconds.' },
+  { id: 'D14', title: 'Edge CDN and Nimbus DNS', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-06-30',
+    text: 'Nimbus Edge CDN caches content in 120 edge locations to make websites and downloads faster. It supports custom certificates, signed URLs and cache rules by path. Nimbus DNS hosts public and private zones and supports weighted and failover records. Latency-based routing is not available yet.' },
+  { id: 'D15', title: 'Nimbus Managed SQL (NMS)', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-15',
+    text: 'Nimbus Managed SQL (NMS) runs MySQL and PostgreSQL databases for customers. Automatic backups are kept for 7 days by default and can be kept for up to 35 days. The high availability option keeps a standby copy in a second zone and fails over in under 60 seconds. Read replicas can be added in the same or another region.' },
+  { id: 'D16', title: 'Nimbus Lakehouse', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-08',
+    text: 'Nimbus Lakehouse is a serverless data warehouse. Customers run standard SQL on data in NOS and in Lakehouse tables without managing clusters. Queries are billed per TB of data scanned, and storage is billed per GB-month. Lakehouse connects to common BI tools through JDBC and ODBC drivers.' },
+  { id: 'D17', title: 'Nimbus Queue', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-07-10',
+    text: 'Nimbus Queue is a fully managed message queue. Messages are kept for up to 7 days, and each message can be up to 256 KB. Standard queues give at-least-once delivery, and FIFO queues keep the order of messages. Queue topics send one message to many subscribers for fan-out designs.' },
+  { id: 'D18', title: 'Nimbus Watch monitoring', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-09-20',
+    text: 'Nimbus Watch collects metrics and logs from all Nimbus services. Metrics are kept for 15 months and logs for 30 days by default. Alarms can send alerts by email, SMS or webhook. Dashboards can be shared with customers who have read access.' },
+  { id: 'D19', title: 'Nimbus Access Manager (NAM)', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-08-14',
+    text: 'Nimbus Access Manager (NAM) controls who can do what in a Nimbus account. It has users, groups, roles and policies. Roles give short-term credentials to services and to people who sign in through SSO with SAML 2.0 or OpenID Connect. Follow least privilege: start from read-only policies and add actions only when needed.' },
+  { id: 'D20', title: 'Nimbus Crypto Keys (NCK)', type: 'Product guide', roles: ['all'], sensitivity: 'Internal', updated: '2026-07-29',
+    text: 'Nimbus Crypto Keys (NCK) creates and stores encryption keys. NOS, NBD and NMS can use customer managed keys from NCK. Keys are regional and cannot be exported. Every use of a key is written to the audit log in Nimbus Watch.' },
+  { id: 'D21', title: 'Discount approval policy (FY2026)', type: 'Pricing policy', roles: ['se', 'am'], sensitivity: 'Confidential', updated: '2026-07-01',
+    text: 'Solutions engineers and account managers can offer up to 10% off list price without approval. Discounts from 10% to 20% need approval from the regional sales director. Discounts above 20% go to Deal Desk review, which meets every Tuesday and Thursday. Always attach the sizing sheet from Spec Matcher to the request.' },
+  { id: 'D22', title: 'Proof of concept (POC) credits', type: 'Pricing policy', roles: ['se', 'am'], sensitivity: 'Internal', updated: '2026-06-15',
+    text: 'New customers can get up to 2,000 USD in POC credits for 30 days. The solutions engineer requests credits in the partner portal and links the sales opportunity. Requests above 2,000 USD need director approval. Unused credits expire at the end of the POC.' },
+  { id: 'D23', title: 'Solutions engineer onboarding: first 30 days', type: 'Onboarding', roles: ['se'], sensitivity: 'Internal', updated: '2026-09-01',
+    text: 'In week 1, finish the Core Services course and learn the names of the 18 core Nimbus services. In week 2, learn the NES instance families and size three sample migrations in Spec Matcher. In week 3, shadow two customer calls and build a demo in the sandbox account. In week 4, present a mock solution to your mentor and pass the pricing quiz.' },
+  { id: 'D24', title: 'Migration playbook: moving customers from AWS', type: 'Playbook', roles: ['se'], sensitivity: 'Internal', updated: '2026-08-20',
+    text: 'Start every AWS migration with a discovery call and an export of the customer’s instance list. Map each EC2 instance to the NES instance type with the same vCPU and memory, then check disk and network needs. Move S3 data to NOS with the Nimbus Data Mover tool. Plan the cut-over for a weekend and keep the old environment for two weeks.' },
+  { id: 'D25', title: 'Support runbook: NES host failure', type: 'Runbook', roles: ['support'], sensitivity: 'Internal', updated: '2026-09-18',
+    text: 'When an NES host fails, instances with auto-recovery restart on a healthy host within 5 minutes. Support engineers check the host health page, open a Severity 2 ticket if more than ten instances are affected, and send the standard customer notice. On-call phone: +971 50 000 0000.' },
+  { id: 'D26', title: 'Nimbus Cloud regions', type: 'Reference', roles: ['all'], sensitivity: 'Public', updated: '2026-10-10',
+    text: 'Nimbus Cloud runs six regions: nb-me-1 in Dubai, nb-eu-1 in Frankfurt, nb-eu-2 in London, nb-us-1 in Virginia, nb-ap-1 in Singapore and nb-ap-2 in Mumbai. Each region has three zones. Customer data stays in the chosen region unless the customer sets up replication.' },
+  { id: 'D27', title: 'Account plan template', type: 'Template', roles: ['am'], sensitivity: 'Confidential', updated: '2026-05-30',
+    text: 'Template owner: Jane Doe (jane.doe@example.com). The account plan lists the customer’s goals, current cloud spend, key contacts and the next three opportunities. Account managers update it every quarter and share it with the solutions engineer before each executive meeting.' },
+  { id: 'D28', title: 'Service level agreements (SLA)', type: 'Reference', roles: ['all'], sensitivity: 'Public', updated: '2026-07-15',
+    text: 'NES offers 99.95% monthly uptime for instances spread across two or more zones and 99.5% for a single instance. The NOS Hot tier offers 99.9% availability. If Nimbus misses an SLA, customers receive service credits of 10% to 30% of the monthly bill.' }
+];
+
+/* ---------------------------------------------------------------------
+   Demo test set for the Evaluation page.
+   type 'cross' = asked with another provider's words,
+   type 'same'  = asked with Nimbus words.
+   gold = the document that holds the answer.
+   --------------------------------------------------------------------- */
+const TEST_SET = [
+  { q: 'What is our equivalent of an AWS EC2 m5.2xlarge?', gold: 'D03', type: 'cross' },
+  { q: 'Which instance should I offer a customer running r5.2xlarge?', gold: 'D05', type: 'cross' },
+  { q: 'Customer uses Standard_F8s_v2 on Azure, what do we have?', gold: 'D04', type: 'cross' },
+  { q: 'Do we have something like S3 Glacier for cheap archive?', gold: 'D08', type: 'cross' },
+  { q: 'What replaces AWS Lambda here?', gold: 'D09', type: 'cross' },
+  { q: 'Is there a managed Kubernetes like GKE?', gold: 'D10', type: 'cross' },
+  { q: 'What is our version of EBS and how many IOPS can it do?', gold: 'D11', type: 'cross' },
+  { q: 'How do I connect two VNets in our cloud?', gold: 'D12', type: 'cross' },
+  { q: 'What is the alternative to an Application Load Balancer?', gold: 'D13', type: 'cross' },
+  { q: 'We need a CDN like CloudFront for a customer website', gold: 'D14', type: 'cross' },
+  { q: 'Customer runs Amazon RDS for PostgreSQL, where should it move?', gold: 'D15', type: 'cross' },
+  { q: 'Is there a BigQuery equivalent?', gold: 'D16', type: 'cross' },
+  { q: 'What service matches Amazon SQS?', gold: 'D17', type: 'cross' },
+  { q: 'Where do I see metrics like in CloudWatch?', gold: 'D18', type: 'cross' },
+  { q: 'How do we handle permissions like AWS IAM roles?', gold: 'D19', type: 'cross' },
+  { q: 'Which region is closest to AWS me-central-1?', gold: 'D26', type: 'cross' },
+  { q: 'What does nx-gp3-8x32 cost per hour?', gold: 'D03', type: 'same' },
+  { q: 'How long does a restore from the NOS Frozen tier take?', gold: 'D08', type: 'same' },
+  { q: 'What discount can I give without approval?', gold: 'D21', type: 'same' },
+  { q: 'How much POC credit can a new customer get?', gold: 'D22', type: 'same' },
+  { q: 'What should I do in my first week as a solutions engineer?', gold: 'D23', type: 'same' },
+  { q: 'What is the SLA for Nimbus Elastic Server?', gold: 'D28', type: 'same' },
+  { q: 'How are NES instance types named?', gold: 'D02', type: 'same' },
+  { q: 'How long are NMS backups kept?', gold: 'D15', type: 'same' }
+];
+</script>
+<script id="cl-engine">
+/* =====================================================================
+   CloudLexis NLP engine
+   ---------------------------------------------------------------------
+   Pure functions with no DOM access, so the same code can be tested in
+   Node.js. The steps follow the pipeline in the report:
+     1 tokenise -> 2 classify intent -> 3 recognise entities ->
+     4 link entities to the glossary -> 5 rewrite the query ->
+     6 retrieve and rank -> 7 compose the answer and run checks
+   ===================================================================== */
+const Engine = (() => {
+
+  const INDEX_DATE = '2026-10-20';   // date the demo index was built
+  const STALE_DAYS = 120;            // older sources get a freshness warning
+
+  const STOPWORDS = new Set(('a an and are as at be by can could do does did for from have has had how i if in into is it its ' +
+    'me my of on or our so than that the their them then there these they this to us was we what when where which who why ' +
+    'will with would you your here any some about need needs want get give tell should much many').split(' '));
+
+  const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+
+  /* -------------------------------------------------------------------
+     STEP 1. Tokenisation
+     Product codes and region names are found first and kept as one
+     token. A normal word splitter would break "m5.2xlarge" into "m5"
+     and "2xlarge", and the code would no longer match anything.
+     ------------------------------------------------------------------- */
+  const SKU_PATTERNS = [
+    { provider: 'nimbus', re: /\bnx-[a-z]{2}\d-\d+x\d+(?:-\d+g)?\b/gi },
+    { provider: 'azure', re: /\bStandard_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*\b/gi },
+    { provider: 'gcp', re: /\b(?:n1|n2|n2d|n4|e2|c2|c2d|c3|c3d|m1|m2|m3|g2|a2|a3|t2d)-(?:standard|highmem|highcpu|ultramem|megamem)-\d+\b/gi },
+    { provider: 'aws', re: /\b[a-z]\d[a-z0-9]*\.(?:nano|micro|small|medium|large|\d*xlarge|metal)\b/gi }
+  ];
+
+  // region code (lower case) -> { region, provider }
+  const REGION_INDEX = new Map();
+  REGIONS.forEach(r => {
+    REGION_INDEX.set(r.nimbus, { region: r, provider: 'nimbus' });
+    ['aws', 'azure', 'gcp'].forEach(p => r[p].forEach(code => REGION_INDEX.set(code.toLowerCase(), { region: r, provider: p })));
+  });
+  const REGION_RE = new RegExp('\\b(?:' + [...REGION_INDEX.keys()].sort((a, b) => b.length - a.length).map(escRe).join('|') + ')\\b', 'gi');
+
+  function tokenize(text) {
+    const spans = [];
+    const add = (m, kind, provider) => spans.push({ start: m.index, end: m.index + m[0].length, text: m[0], kind, provider });
+    SKU_PATTERNS.forEach(p => { p.re.lastIndex = 0; let m; while ((m = p.re.exec(text))) add(m, 'sku', p.provider); });
+    REGION_RE.lastIndex = 0;
+    let m;
+    while ((m = REGION_RE.exec(text))) add(m, 'region', REGION_INDEX.get(m[0].toLowerCase()).provider);
+
+    // keep the earliest span; on a tie keep the longest
+    spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+    const kept = [];
+    let lastEnd = -1;
+    for (const s of spans) if (s.start >= lastEnd) { kept.push(s); lastEnd = s.end; }
+
+    // ordinary words between the protected spans; "12.5" and "6,000" stay whole
+    const tokens = [];
+    const WORD = /[A-Za-z0-9]+(?:[.,][0-9]+)*/g;
+    const pushWords = (from, to) => {
+      const seg = text.slice(from, to);
+      WORD.lastIndex = 0;
+      let w;
+      while ((w = WORD.exec(seg))) tokens.push({ text: w[0], norm: w[0].toLowerCase(), start: from + w.index, end: from + w.index + w[0].length, protected: false });
+    };
+    let pos = 0;
+    for (const s of kept) {
+      pushWords(pos, s.start);
+      tokens.push({ text: s.text, norm: s.text.toLowerCase(), start: s.start, end: s.end, protected: true, kind: s.kind, provider: s.provider });
+      pos = s.end;
+    }
+    pushWords(pos, text.length);
+    return tokens;
+  }
+
+  // What a plain splitter would do, shown in the trace for comparison
+  const naiveSplit = text => text.split(/[^A-Za-z0-9]+/).filter(Boolean);
+
+  // Light normalisation for keyword search: lower case, drop stop words,
+  // strip a plural "s". Product codes are never changed.
+  const stem = w => (w.length > 4 && w.endsWith('s') && !w.endsWith('ss') && !/\d/.test(w)) ? w.slice(0, -1) : w;
+  const indexTerms = tokens => tokens.filter(t => t.protected || !STOPWORDS.has(t.norm)).map(t => t.protected ? t.norm : stem(t.norm));
+  const isStop = t => !t.protected && STOPWORDS.has(t.norm);
+
+  /* -------------------------------------------------------------------
+     STEP 2. Intent classification
+     Prototype: a keyword model with softmax scores.
+     Planned: DistilBERT fine-tuned on labelled questions.
+     ------------------------------------------------------------------- */
+  const INTENTS = [
+    { id: 'service_mapping', label: 'Service mapping', cues: ['equivalent', 'version of', 'like', 'similar', 'replace', 'replaces', 'alternative', 'matches', 'match', 'instead of', 'counterpart', 'do we have', 'is there'] },
+    { id: 'migration_sizing', label: 'Migration sizing', cues: ['migrate', 'migration', 'move', 'moving', 'offer', 'recommend', 'sizing', 'size', 'runs', 'running', 'uses', 'customer'] },
+    { id: 'spec_lookup', label: 'Spec lookup', cues: ['vcpu', 'memory', 'gib', 'iops', 'gbps', 'spec', 'specs', 'limit', 'how many', 'maximum', 'sla', 'uptime', 'how long', 'kept'] },
+    { id: 'pricing_policy', label: 'Pricing and policy', cues: ['price', 'cost', 'costs', 'discount', 'approval', 'credit', 'credits', 'billing', 'billed', 'usd', 'quote', 'per hour', 'how much'] },
+    { id: 'how_to', label: 'How-to and process', cues: ['how do i', 'how to', 'steps', 'process', 'set up', 'connect', 'request', 'first week', 'onboarding', 'should i do'] },
+    { id: 'concept', label: 'Concept explanation', cues: ['what is', 'explain', 'difference', 'why', 'meaning', 'overview', 'named'] }
+  ];
+
+  function classifyIntent(text, ents) {
+    const t = ' ' + text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+    const scores = INTENTS.map(it => ({ id: it.id, label: it.label, score: 0.2 + it.cues.reduce((s, c) => s + (t.includes(' ' + c + ' ') ? 1 : 0), 0) }));
+    const get = id => scores.find(s => s.id === id);
+    if (ents.some(e => e.label === 'SKU')) get('migration_sizing').score += 1.2;
+    if (ents.some(e => e.label === 'SERVICE' && e.provider && e.provider !== 'nimbus')) get('service_mapping').score += 1;
+    if (ents.some(e => e.label === 'REGION')) get('service_mapping').score += 0.6;
+    const T = 0.6;                                   // softmax temperature
+    const ex = scores.map(s => Math.exp(s.score / T));
+    const Z = ex.reduce((a, b) => a + b, 0);
+    scores.forEach((s, i) => { s.prob = ex[i] / Z; });
+    return scores.sort((a, b) => b.prob - a.prob);
+  }
+
+  /* -------------------------------------------------------------------
+     STEP 3. Entity recognition
+     Labels: PROVIDER, SERVICE, SKU, SPEC, REGION.
+     Prototype: gazetteer (glossary aliases) + regular expressions +
+     fuzzy matching for typos. Planned: add a fine-tuned transformer NER
+     model to catch names that are not in the glossary yet.
+     ------------------------------------------------------------------- */
+  const ALIAS = new Map();          // "token token" -> [{ concept, provider }]
+  let MAX_ALIAS_LEN = 1;
+  const aliasKey = s => tokenize(s).map(t => t.norm).join(' ');
+  function addAlias(a, concept, provider) {
+    const key = aliasKey(a);
+    if (!ALIAS.has(key)) ALIAS.set(key, []);
+    const list = ALIAS.get(key);
+    if (!list.some(x => x.concept === concept && x.provider === provider)) list.push({ concept, provider });
+    MAX_ALIAS_LEN = Math.max(MAX_ALIAS_LEN, key.split(' ').length);
+  }
+  CONCEPTS.forEach(c => {
+    ['aws', 'azure', 'gcp', 'nimbus'].forEach(p => c[p].aliases.forEach(a => addAlias(a, c, p)));
+    c.generic.forEach(a => addAlias(a, c, null));
+  });
+  // single-word, vendor-specific aliases used for fuzzy matching
+  const FUZZY_ALIASES = [...ALIAS.entries()].filter(([k, v]) => !k.includes(' ') && k.length >= 5 && v.some(x => x.provider));
+
+  const PROVIDER_WORDS = { 'aws': 'aws', 'amazon': 'aws', 'azure': 'azure', 'microsoft': 'azure', 'gcp': 'gcp', 'google': 'gcp', 'google cloud': 'gcp', 'nimbus': 'nimbus', 'nimbus cloud': 'nimbus' };
+  const UNIT = u => /cpu|core/i.test(u) ? 'vcpu' : /gpu/i.test(u) ? 'gpu' : 'mem';
+
+  function levenshtein(a, b) {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  }
+
+  function recognise(text, opts = {}) {
+    const useGeneric = opts.generic !== false;
+    const useFuzzy = opts.fuzzy !== false;
+    const tokens = tokenize(text);
+    const ents = [];
+    const covered = new Set();
+    let i = 0;
+    while (i < tokens.length) {
+      const t = tokens[i];
+      if (t.protected) {
+        if (t.kind === 'sku') ents.push({ label: 'SKU', text: t.text, start: t.start, end: t.end, provider: t.provider });
+        else ents.push({ label: 'REGION', text: t.text, start: t.start, end: t.end, provider: t.provider, region: REGION_INDEX.get(t.norm).region });
+        covered.add(i); i++; continue;
+      }
+      let matched = false;
+      for (let n = Math.min(MAX_ALIAS_LEN, tokens.length - i); n >= 1 && !matched; n--) {
+        const slice = tokens.slice(i, i + n);
+        if (slice.some(x => x.protected)) continue;
+        const key = slice.map(x => x.norm).join(' ');
+        // plural fallback: "VPCs" -> "vpc"
+        let cands = ALIAS.get(key) || (key.length > 3 && key.endsWith('s') ? ALIAS.get(key.slice(0, -1)) : undefined);
+        if (cands && !useGeneric) cands = cands.filter(c => c.provider);
+        const span = { start: slice[0].start, end: slice[n - 1].end, text: text.slice(slice[0].start, slice[n - 1].end) };
+        if (cands && cands.length) {
+          const provs = [...new Set(cands.map(c => c.provider))];
+          ents.push({ label: 'SERVICE', ...span, candidates: cands, provider: provs.length === 1 ? provs[0] : null });
+          matched = true;
+        } else if (PROVIDER_WORDS[key]) {
+          ents.push({ label: 'PROVIDER', ...span, provider: PROVIDER_WORDS[key] });
+          matched = true;
+        }
+        if (matched) { for (let k = i; k < i + n; k++) covered.add(k); i += n; }
+      }
+      if (!matched) i++;
+    }
+
+    // fuzzy match for typos such as "cloudwach" -> "cloudwatch"
+    if (useFuzzy) tokens.forEach((t, idx) => {
+      if (covered.has(idx) || isStop(t) || t.norm.length < 5 || /\d/.test(t.norm)) return;
+      let best = null;
+      for (const [alias, cands] of FUZZY_ALIASES) {
+        const sim = 1 - levenshtein(t.norm, alias) / Math.max(t.norm.length, alias.length);
+        if (sim >= 0.8 && sim < 1 && (!best || sim > best.sim)) best = { sim, alias, cands };
+      }
+      if (best) {
+        const provs = [...new Set(best.cands.map(c => c.provider))];
+        ents.push({ label: 'SERVICE', text: t.text, start: t.start, end: t.end, candidates: best.cands.filter(c => c.provider), provider: provs.length === 1 ? provs[0] : null, fuzzy: best.sim, fuzzyAlias: best.alias });
+      }
+    });
+
+    // specs written as numbers: "8 vCPU", "32 GB", "1 GPU"
+    const SPEC_RE = /(\d+(?:\.\d+)?)\s*(vcpus?|cpus?|cores?|gib|gb|gpus?)\b/gi;
+    let m;
+    while ((m = SPEC_RE.exec(text))) {
+      const s = m.index, e = s + m[0].length;
+      if (!ents.some(x => s < x.end && e > x.start)) ents.push({ label: 'SPEC', text: m[0], start: s, end: e, value: parseFloat(m[1]), unit: UNIT(m[2]) });
+    }
+    ents.sort((a, b) => a.start - b.start);
+    return { tokens, ents };
+  }
+
+  /* -------------------------------------------------------------------
+     Instance specs: read vCPU and memory from a product code, then find
+     the closest Nimbus instance type.
+     ------------------------------------------------------------------- */
+  function parseSku(code, provider) {
+    const known = COMPETITOR_SKUS.find(s => s.code.toLowerCase() === code.toLowerCase());
+    if (known) return { vcpu: known.vcpu, mem: known.mem, gpu: known.gpu, provider: known.provider, source: 'public spec table' };
+    const c = code.toLowerCase();
+    if (provider === 'aws') {
+      const m = c.match(/^([a-z])(\d)[a-z0-9]*\.(\d*)(nano|micro|small|medium|large|xlarge|metal)$/);
+      if (!m || m[4] === 'metal') return null;
+      const vcpu = m[4] === 'xlarge' ? 4 * parseInt(m[3] || '1', 10) : 2;
+      const ratio = { m: 4, c: 2, r: 8, x: 16, t: 4, g: 4 }[m[1]] || 4;
+      return { vcpu, mem: vcpu * ratio, gpu: m[1] === 'g' || m[1] === 'p' ? 1 : 0, provider, source: 'estimated from the name' };
+    }
+    if (provider === 'azure') {
+      const m = c.match(/^standard_([a-z]+)(\d+)/);
+      if (!m) return null;
+      const vcpu = parseInt(m[2], 10), fam = m[1][0];
+      const ratio = { d: 4, f: 2, e: 8, m: 16, b: 4, n: 7 }[fam] || 4;
+      return { vcpu, mem: vcpu * ratio, gpu: fam === 'n' ? 1 : 0, provider, source: 'estimated from the name' };
+    }
+    if (provider === 'gcp') {
+      const m = c.match(/^([a-z0-9]+)-(standard|highmem|highcpu|ultramem|megamem)-(\d+)$/);
+      if (!m) return null;
+      const vcpu = parseInt(m[3], 10);
+      const ratio = { standard: 4, highmem: 8, highcpu: m[1].startsWith('c2') ? 2 : 1, ultramem: 24, megamem: 14 }[m[2]];
+      return { vcpu, mem: vcpu * ratio, gpu: ['g2', 'a2', 'a3'].includes(m[1]) ? 1 : 0, provider, source: 'estimated from the name' };
+    }
+    if (provider === 'nimbus') {
+      const s = NIMBUS_SKUS.find(x => x.code === c);
+      return s ? { vcpu: s.vcpu, mem: s.mem, gpu: s.gpu, provider, source: 'Nimbus spec sheet' } : null;
+    }
+    return null;
+  }
+
+  // memory per vCPU decides the family: about 2 = compute, 4 = general, 8 = memory
+  const famLabel = f => FAMILY_NAMES[f].toLowerCase().replace('(gpu)', '(GPU)');
+  const withArticle = w => (/^[aeiou]/i.test(w) ? 'an ' : 'a ') + w;
+  const familyOf = spec => spec.gpu > 0 ? 'ac' : (spec.mem / spec.vcpu <= 2.5 ? 'cp' : spec.mem / spec.vcpu <= 5.5 ? 'gp' : 'mo');
+
+  function matchSku(spec) {
+    const fam = familyOf(spec);
+    return NIMBUS_SKUS.map(s => {
+      const dv = Math.abs(Math.log2(s.vcpu / spec.vcpu));       // size gap in "doublings"
+      const dm = Math.abs(Math.log2(s.mem / spec.mem));
+      const gpuGap = (spec.gpu > 0) !== (s.gpu > 0) ? 2.5 : 0;
+      const under = (s.vcpu < spec.vcpu || s.mem < spec.mem) ? 0.25 : 0;   // prefer not to undersize
+      const famGap = s.family === fam ? 0 : 0.15;
+      const score = Math.round(100 * Math.exp(-0.9 * (dv + dm + gpuGap + under + famGap)));
+      const reasons = [
+        s.vcpu === spec.vcpu ? { ok: true, t: `Same vCPU (${s.vcpu})` } : { ok: s.vcpu > spec.vcpu, t: `${s.vcpu} vCPU vs ${spec.vcpu}` },
+        s.mem === spec.mem ? { ok: true, t: `Same memory (${s.mem} GiB)` } : { ok: s.mem > spec.mem, t: `${s.mem} GiB vs ${spec.mem} GiB` },
+        s.family === fam ? { ok: true, t: `Same family: ${famLabel(fam)}` } : { ok: false, t: `Different family: ${famLabel(s.family)}` }
+      ];
+      if (spec.gpu || s.gpu) reasons.push(s.gpu === spec.gpu ? { ok: true, t: `Same GPU count (${s.gpu})` } : { ok: false, t: `${s.gpu} GPU vs ${spec.gpu}` });
+      return { sku: s, score, reasons };
+    }).sort((a, b) => b.score - a.score);
+  }
+
+  /* -------------------------------------------------------------------
+     STEP 4. Entity linking
+     Each mention is tied to one glossary concept and to its Nimbus
+     name. Names used by two providers (e.g. "VPC") are resolved from the
+     provider named in the question.
+     ------------------------------------------------------------------- */
+  function link(ents) {
+    const mentioned = new Set(ents.filter(e => e.label === 'PROVIDER').map(e => e.provider));
+    const links = [];
+    for (const e of ents) {
+      if (e.label === 'SERVICE') {
+        const byConcept = new Map();
+        e.candidates.forEach(c => { if (!byConcept.has(c.concept.id)) byConcept.set(c.concept.id, []); byConcept.get(c.concept.id).push(c); });
+        for (const cands of byConcept.values()) {
+          const concept = cands[0].concept;
+          const provs = [...new Set(cands.map(c => c.provider))];
+          let from = provs[0];
+          let how = e.fuzzy ? `fuzzy match (${Math.round(e.fuzzy * 100)}% similar to "${e.fuzzyAlias}")` : (from ? 'glossary alias' : 'generic term');
+          if (provs.length > 1) {
+            const names = provs.map(p => PROVIDERS[p]).join(' and ');
+            const hit = provs.find(p => mentioned.has(p));
+            if (hit) { from = hit; how = `"${e.text}" is used by ${names}; the question names ${PROVIDERS[hit]}`; }
+            else { how = `"${e.text}" is used by ${names}; no provider named, ${PROVIDERS[from]} assumed`; e.ambiguous = true; }
+          }
+          links.push({ kind: 'service', mention: e.text, concept, from, how, target: concept.nimbus.name, ent: e });
+        }
+      } else if (e.label === 'SKU') {
+        const spec = parseSku(e.text, e.provider);
+        if (!spec) continue;
+        if (e.provider === 'nimbus') {
+          const own = NIMBUS_SKUS.find(s => s.code === e.text.toLowerCase());
+          links.push({ kind: 'sku', mention: e.text, from: 'nimbus', spec, target: e.text, nimbusSku: own, match: null, how: 'already a Nimbus instance type', ent: e });
+        } else {
+          const best = matchSku(spec)[0];
+          links.push({ kind: 'sku', mention: e.text, from: e.provider, spec, target: best.sku.code, nimbusSku: best.sku, match: best,
+            how: `${spec.vcpu} vCPU, ${spec.mem} GiB${spec.gpu ? `, ${spec.gpu} GPU` : ''} (${spec.source}); closest Nimbus type`, ent: e });
+        }
+      } else if (e.label === 'REGION' && e.provider !== 'nimbus') {
+        links.push({ kind: 'region', mention: e.text, from: e.provider, region: e.region, target: `${e.region.nimbus} (${e.region.city})`, how: 'region table', ent: e });
+      }
+    }
+    // "8 vCPU and 32 GB" without a product code still gets a size match
+    const v = ents.find(e => e.label === 'SPEC' && e.unit === 'vcpu');
+    const mm = ents.find(e => e.label === 'SPEC' && e.unit === 'mem');
+    if (!links.some(l => l.kind === 'sku') && v && mm) {
+      const g = ents.find(e => e.label === 'SPEC' && e.unit === 'gpu');
+      const spec = { vcpu: v.value, mem: mm.value, gpu: g ? g.value : 0, source: 'specs in the question' };
+      const best = matchSku(spec)[0];
+      links.push({ kind: 'sku', mention: `${v.text}, ${mm.text}`, from: null, spec, target: best.sku.code, nimbusSku: best.sku, match: best, how: 'built from the specs in the question' });
+    }
+    // an instance type always implies the virtual server concept
+    const sku = links.find(l => l.kind === 'sku');
+    if (sku && !links.some(l => l.kind === 'service' && l.concept.id === 'compute.vm')) {
+      links.push({ kind: 'service', mention: '(instance type)', concept: CONCEPTS[0], from: sku.from, how: 'implied by the instance type', target: CONCEPTS[0].nimbus.name, implied: true });
+    }
+    return links;
+  }
+
+  /* -------------------------------------------------------------------
+     STEP 5. Query rewriting: add the Nimbus names to the question so
+     that keyword search can find Nimbus documents. Terms that are
+     already Nimbus words, or only implied, are not added.
+     ------------------------------------------------------------------- */
+  function rewrite(query, links) {
+    const added = [];
+    // a concept the user already named with a Nimbus word needs no expansion
+    const named = new Set(links.filter(l => l.kind === 'service' && l.from === 'nimbus').map(l => l.concept.id));
+    links.filter(l => !l.implied && l.from !== 'nimbus' && !(l.kind === 'service' && named.has(l.concept.id))).forEach(l => {
+      if (l.kind === 'service') {
+        const n = l.concept.nimbus;
+        added.push(n.name.replace(/[()]/g, ''));
+      }
+      if (l.kind === 'sku' && l.nimbusSku) added.push(l.nimbusSku.code, famLabel(l.nimbusSku.family));
+      if (l.kind === 'region') added.push(l.region.nimbus, l.region.city);
+    });
+    const lower = query.toLowerCase();
+    const uniq = [...new Set(added)].filter(a => !lower.includes(a.toLowerCase()));
+    return { text: uniq.length ? `${query} ${uniq.join(' ')}` : query, added: uniq };
+  }
+
+  /* -------------------------------------------------------------------
+     Indexing: redact personal data, split documents into chunks, tag
+     entities in each chunk and build BM25 statistics.
+     ------------------------------------------------------------------- */
+  const PII_RULES = [
+    { label: 'EMAIL', re: /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g },
+    { label: 'PHONE', re: /\+\d{1,3}[\s-]?\(?\d{2,3}\)?[\s-]?\d{3}[\s-]?\d{4}\b/g },
+    { label: 'ACCESS_KEY', re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+    { label: 'IP_ADDRESS', re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g },
+    { label: 'PERSON', re: /\b((?:[Oo]wner|[Cc]ontact|[Mm]anager|[Ll]ead)\s*:?\s+)([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)/g, group: 2 }
+  ];
+
+  function redact(text) {
+    const found = [];
+    let out = text;
+    PII_RULES.forEach(rule => {
+      out = out.replace(rule.re, (...args) => {
+        const whole = args[0];
+        if (rule.group) { const keep = args[1]; found.push({ label: rule.label, value: args[rule.group] }); return `${keep}[${rule.label}]`; }
+        found.push({ label: rule.label, value: whole });
+        return `[${rule.label}]`;
+      });
+    });
+    return { text: out, found };
+  }
+
+  const splitSentences = text => text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+
+  function tagConcepts(text) {
+    const { ents } = recognise(text, { generic: false, fuzzy: false });
+    const concepts = new Set(), skus = new Set(), regions = new Set();
+    ents.forEach(e => {
+      if (e.label === 'SERVICE') e.candidates.forEach(c => concepts.add(c.concept.id));
+      if (e.label === 'SKU') skus.add(e.text.toLowerCase());
+      if (e.label === 'REGION') regions.add(e.region.nimbus);
+    });
+    return { ents, concepts, skus, regions };
+  }
+
+  const K1 = 1.2, B = 0.75;   // standard BM25 settings
+
+  function buildIndex() {
+    const chunks = [];
+    const redactions = [];
+    DOCS.forEach(doc => {
+      const red = redact(doc.text);
+      red.found.forEach(f => redactions.push({ doc: doc.id, ...f }));
+      const sents = splitSentences(red.text);
+      let buf = [];
+      let n = 0;
+      const flush = () => {
+        if (!buf.length) return;
+        n++;
+        const text = buf.join(' ');
+        const body = tagConcepts(text);
+        const title = tagConcepts(doc.title);
+        title.concepts.forEach(c => body.concepts.add(c));
+        // the title is added to every chunk so each chunk keeps its context
+        const terms = indexTerms(tokenize(`${doc.title}. ${text}`));
+        chunks.push({ id: `${doc.id}-c${n}`, doc, n, text, ents: body.ents, concepts: [...body.concepts], skus: [...body.skus], regions: [...body.regions], terms, len: terms.length });
+        buf = [];
+      };
+      // up to 3 sentences or about 48 words per chunk
+      sents.forEach(s => {
+        const words = (buf.join(' ') + ' ' + s).trim().split(/\s+/).length;
+        if (buf.length && (words > 48 || buf.length >= 3)) flush();
+        buf.push(s);
+      });
+      flush();
+    });
+
+    const df = new Map();
+    chunks.forEach(c => {
+      c.tf = new Map();
+      c.terms.forEach(t => c.tf.set(t, (c.tf.get(t) || 0) + 1));
+      c.tf.forEach((_, t) => df.set(t, (df.get(t) || 0) + 1));
+    });
+    const N = chunks.length;
+    const avgdl = chunks.reduce((s, c) => s + c.len, 0) / N;
+    const idf = t => { const n = df.get(t) || 0; return Math.log(1 + (N - n + 0.5) / (n + 0.5)); };
+    const tagCount = chunks.reduce((s, c) => s + c.ents.length, 0);
+    return { chunks, stats: { N, avgdl, idf, df }, redactions, tagCount };
+  }
+
+  const INDEX = buildIndex();
+
+  function bm25(chunk, qterms) {
+    let s = 0;
+    for (const t of qterms) {
+      const f = chunk.tf.get(t);
+      if (!f) continue;
+      s += INDEX.stats.idf(t) * (f * (K1 + 1)) / (f + K1 * (1 - B + B * chunk.len / INDEX.stats.avgdl));
+    }
+    return s;
+  }
+
+  /* -------------------------------------------------------------------
+     STEP 6. Retrieval
+     mode 'bm25'    : keyword search on the raw question
+     mode 'rewrite' : keyword search on the rewritten question
+     mode 'full'    : rewritten question + entity ranking, merged with
+                      reciprocal rank fusion (RRF)
+     The role filter runs first, so hidden documents are never scored.
+     ------------------------------------------------------------------- */
+  function retrieve(query, opts = {}) {
+    const role = opts.role || 'se';
+    const mode = opts.mode || 'full';
+    const roleFilter = opts.roleFilter !== false;
+    const rec = recognise(query);
+    const links = link(rec.ents);
+    const rw = rewrite(query, links);
+    const visible = INDEX.chunks.filter(c => !roleFilter || c.doc.roles.includes('all') || c.doc.roles.includes(role));
+    const hiddenDocs = new Set(INDEX.chunks.filter(c => !visible.includes(c)).map(c => c.doc.id));
+    const qterms = [...new Set(indexTerms(tokenize(mode === 'bm25' ? query : rw.text)))];
+
+    const bm = visible.map(c => ({ c, s: bm25(c, qterms) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s);
+    const bmRank = new Map(bm.map((x, i) => [x.c.id, i + 1]));
+    const bmScore = new Map(bm.map(x => [x.c.id, x.s]));
+
+    let ent = [];
+    if (mode === 'full') {
+      const qConcepts = new Set(links.filter(l => l.kind === 'service').map(l => l.concept.id));
+      const mainDocs = new Set(links.filter(l => l.kind === 'service' && !l.implied).map(l => l.concept.doc));
+      const qSkus = new Set(links.filter(l => l.kind === 'sku' && l.nimbusSku).map(l => l.nimbusSku.code));
+      const qRegions = new Set(links.filter(l => l.kind === 'region').map(l => l.region.nimbus));
+      ent = visible.map(c => {
+        let s = 0;
+        c.concepts.forEach(x => { if (qConcepts.has(x)) s += 1; });
+        c.skus.forEach(x => { if (qSkus.has(x)) s += 3; });      // exact instance type is the strongest signal
+        c.regions.forEach(x => { if (qRegions.has(x)) s += 2; });
+        if (s > 0 && mainDocs.has(c.doc.id)) s += 0.5;     // the glossary points to this document
+        return { c, s };
+      }).filter(x => x.s > 0).sort((a, b) => b.s - a.s || (bmRank.get(a.c.id) || 999) - (bmRank.get(b.c.id) || 999));
+    }
+    const entRank = new Map(ent.map((x, i) => [x.c.id, i + 1]));
+
+    const RRF_K = 60;
+    const fused = new Map();
+    const addList = list => list.forEach((x, i) => {
+      const cur = fused.get(x.c.id) || { c: x.c, s: 0 };
+      cur.s += 1 / (RRF_K + i + 1);
+      fused.set(x.c.id, cur);
+    });
+    addList(bm);
+    addList(ent);
+    const results = [...fused.values()].sort((a, b) => b.s - a.s).map((x, i) => ({
+      chunk: x.c, rank: i + 1, fused: x.s,
+      bmRank: bmRank.get(x.c.id) || null, bmScore: bmScore.get(x.c.id) || 0, entRank: entRank.get(x.c.id) || null
+    }));
+    return { query, mode, role, rec, links, rewrite: rw, qterms, results, hiddenDocs: [...hiddenDocs], visibleCount: visible.length };
+  }
+
+  /* -------------------------------------------------------------------
+     STEP 7. Answer composition and checks
+     Prototype: the answer is built from the best sentences of the top
+     chunks with fixed templates. Planned: an LLM writes the answer from
+     the same context with the prompt shown in the trace.
+     ------------------------------------------------------------------- */
+  function answer(query, opts = {}) {
+    const settings = Object.assign({ grounded: true, numberCheck: true, roleFilter: true, freshness: true }, opts.settings || {});
+    const r = retrieve(query, { role: opts.role, roleFilter: settings.roleFilter });
+    const intent = classifyIntent(query, r.rec.ents);
+    const links = r.links.filter(l => !l.implied);
+    const skuLink = links.find(l => l.kind === 'sku' && l.from !== 'nimbus');
+    const ownSku = links.find(l => l.kind === 'sku' && l.from === 'nimbus');
+    const svcLinks = [];
+    links.filter(l => l.kind === 'service' && l.from !== 'nimbus').sort((a, b) => (b.from ? 1 : 0) - (a.from ? 1 : 0))
+      .forEach(l => { if (!svcLinks.some(x => x.concept.id === l.concept.id)) svcLinks.push(l); });
+    const regionLink = links.find(l => l.kind === 'region');
+    const qset = new Set(r.qterms);
+    const focusCodes = [skuLink && skuLink.target, ownSku && ownSku.target].filter(Boolean).map(s => s.toLowerCase());
+
+    // intents with at least 20% probability shape which sentences are preferred
+    const likely = new Set(intent.filter(i => i.prob >= 0.2).map(i => i.id));
+    const qConcepts = new Set(r.links.filter(l => l.kind === 'service').map(l => l.concept.id));
+    const onTopic = chunk => !qConcepts.size || chunk.concepts.some(c => qConcepts.has(c));
+    const evidence = [];
+    const usedDocs = [];
+    const covered = new Set();
+    const addEvidence = p => {
+      if (!usedDocs.includes(p.chunk.doc.id)) usedDocs.push(p.chunk.doc.id);
+      evidence.push(p);
+      p.terms.forEach(t => covered.add(t));
+    };
+    const sentencesOf = (chunk, ri) => splitSentences(chunk.text).map((s, si) => {
+      let mult = (1 - 0.08 * ri) * (onTopic(chunk) ? 1 : 0.4);      // other products are down-weighted
+      if (focusCodes.some(c => s.toLowerCase().includes(c))) mult *= 3;
+      if (likely.has('pricing_policy') && /USD|billed|price|cost|%/i.test(s)) mult *= 1.5;
+      if (likely.has('spec_lookup') && /\d/.test(s)) mult *= 1.3;
+      return { s, si, chunk, mult, terms: new Set(indexTerms(tokenize(s))) };
+    });
+
+    // (a) structured lookup: for an instance type, quote its row from the spec sheet
+    const visible = INDEX.chunks.filter(c => !settings.roleFilter || c.doc.roles.includes('all') || c.doc.roles.includes(r.role));
+    let specRow = null;
+    focusCodes.forEach(code => {
+      for (const c of visible.filter(ch => ch.skus.includes(code) && ch.doc.type === 'Spec sheet')) {
+        const row = sentencesOf(c, 0).find(x => x.s.toLowerCase().startsWith(code) && /USD/.test(x.s));
+        if (row && !evidence.some(e => e.s === row.s)) { addEvidence(row); specRow = { code, doc: c.doc }; break; }
+      }
+    });
+
+    // (b) greedy coverage over the top 5 chunks: each new sentence must add
+    //     query words that are not covered yet (max 3 sentences, 2 documents)
+    const pool = [];
+    r.results.slice(0, 5).forEach((x, ri) => pool.push(...sentencesOf(x.chunk, ri)));
+    // provider names only resolve ambiguity, so they do not count as new content
+    const gain = p => { let g = 0; p.terms.forEach(t => { if (qset.has(t) && !covered.has(t) && !PROVIDER_WORDS[t]) g += INDEX.stats.idf(t); }); return g * p.mult; };
+    while (evidence.length < 3) {
+      const cands = pool.filter(p => !evidence.some(e => e.s === p.s) && (usedDocs.includes(p.chunk.doc.id) || usedDocs.length < 2));
+      if (!cands.length) break;
+      cands.forEach(p => { p.g = gain(p); });
+      cands.sort((a, b) => b.g - a.g);
+      if (cands[0].g < 1.5) break;      // nothing new worth adding
+      addEvidence(cands[0]);
+    }
+    // read in a natural order: by source, then by position in the chunk
+    evidence.sort((a, b) => usedDocs.indexOf(a.chunk.doc.id) - usedDocs.indexOf(b.chunk.doc.id) || a.chunk.n - b.chunk.n || a.si - b.si);
+    const cite = ev => usedDocs.indexOf(ev.chunk.doc.id) + 1;
+
+    const topRes = r.results[0];
+    const hasEntityHit = topRes && topRes.entRank;
+    // coverage: how much of the question (weighted by IDF) the evidence talks about
+    const qWeight = r.qterms.filter(t => !PROVIDER_WORDS[t]).reduce((sum, t) => sum + INDEX.stats.idf(t), 0) || 1;
+    const coverage = [...covered].filter(t => qset.has(t) && !PROVIDER_WORDS[t]).reduce((sum, t) => sum + INDEX.stats.idf(t), 0) / qWeight;
+    const weak = !topRes || !evidence.length || (coverage < 0.4 && !hasEntityHit);
+    const pricingAsked = intent[0].id === 'pricing_policy';
+    const priceInEvidence = evidence.some(ev => /USD|%/.test(ev.s));
+
+    const parts = [];
+    let abstained = false;
+    if (skuLink) {
+      const sp = skuLink.spec, n = skuLink.nimbusSku;
+      parts.push(`The closest Nimbus match for <strong>${escHtml(skuLink.mention)}</strong>${skuLink.from ? ` (${PROVIDERS[skuLink.from]}, ${sp.vcpu} vCPU, ${sp.mem} GiB${sp.gpu ? `, ${sp.gpu} GPU` : ''})` : ''} is <strong>${n.code}</strong>, ${withArticle(famLabel(n.family))} instance with ${n.vcpu} vCPU and ${n.mem} GiB${n.gpu ? ` and ${n.gpu} GPU` : ''}.`);
+    } else if (regionLink) {
+      parts.push(`The closest Nimbus region to <strong>${escHtml(regionLink.mention)}</strong> (${PROVIDERS[regionLink.from]}) is <strong>${regionLink.region.nimbus}</strong> in ${regionLink.region.city}.`);
+    }
+    svcLinks.slice(0, 2).forEach(l => {
+      if (skuLink && l.concept.id === 'compute.vm') return;
+      if (l.from) parts.push(`In Nimbus Cloud, <strong>${escHtml(l.concept[l.from].name)}</strong> maps to <strong>${escHtml(l.concept.nimbus.name)}</strong>.`);
+      else parts.push(`The Nimbus Cloud service for ${escHtml(l.mention.toLowerCase())} is <strong>${escHtml(l.concept.nimbus.name)}</strong>.`);
+    });
+
+    if (settings.grounded && weak && !parts.length) {
+      abstained = true;
+      const hiddenNote = r.hiddenDocs.length ? ` ${r.hiddenDocs.length} document${r.hiddenDocs.length > 1 ? 's are' : ' is'} hidden for your role, so the answer may be in a place you cannot open.` : '';
+      parts.push(`I could not find this in the knowledge base you can access.${hiddenNote} Please ask the product specialist team, and use the feedback button so the gap can be fixed.`);
+    } else {
+      if (settings.grounded && pricingAsked && !priceInEvidence && !skuLink && !ownSku && svcLinks.length) {
+        abstained = true;
+        const name = svcLinks[0] ? svcLinks[0].concept.nimbus.name : 'this item';
+        parts.push(`I could not find a list price for ${escHtml(name)} in the knowledge base, so I will not guess one. Ask the pricing team for a quote.`);
+      }
+      const ev = evidence.map(e => `${escHtml(e.s)} <span class="cite" data-doc="${e.chunk.doc.id}">${cite(e)}</span>`);
+      if (ev.length) parts.push(ev.join(' '));
+    }
+
+    const watchConcept = (svcLinks.find(l => !(skuLink && l.concept.id === 'compute.vm')) || {}).concept || (skuLink ? CONCEPTS[0] : null);
+    const sources = usedDocs.map((id, i) => { const ev = evidence.find(e => e.chunk.doc.id === id); return { n: i + 1, doc: ev.chunk.doc, chunk: ev.chunk }; });
+
+    // --- guardrail checks ---
+    const checks = [];
+    const plain = parts.join(' ').replace(/<[^>]+>/g, ' ');
+    const citeFree = parts.join(' ').replace(/<span class="cite"[^>]*>\d+<\/span>/g, '').replace(/<[^>]+>/g, ' ');
+    // digits inside product codes (gp3, m5.2xlarge) are names, not numbers
+    const stripCodes = t => tokenize(t).filter(x => x.protected).sort((a, b) => b.start - a.start)
+      .reduce((out, x) => out.slice(0, x.start) + ' ' + out.slice(x.end), t);
+    const nums = stripCodes(citeFree).match(/\d+(?:[.,]\d+)*/g) || [];
+    const sourceText = [query, ...evidence.map(e => e.chunk.text), skuLink ? JSON.stringify(skuLink.spec) + JSON.stringify(skuLink.nimbusSku) : '', regionLink ? regionLink.region.nimbus : '']
+      .join(' ') + ' ' + r.links.map(l => l.mention).join(' ');
+    const numsFound = nums.filter(x => sourceText.includes(x));
+    if (abstained && !sources.length) checks.push({ status: 'ok', text: 'No claim made without a source (answer withheld)' });
+    else checks.push({ status: sources.length ? 'ok' : 'bad', text: `Grounded in ${sources.length} source${sources.length === 1 ? '' : 's'}` });
+    if (settings.numberCheck) checks.push({ status: numsFound.length === nums.length ? 'ok' : 'bad', text: `Numbers checked: ${numsFound.length} of ${nums.length} found in the sources or question` });
+    if (settings.freshness !== false) {
+      sources.forEach(s => {
+        const age = daysBetween(s.doc.updated, INDEX_DATE);
+        if (age > STALE_DAYS) checks.push({ status: 'warn', text: `"${s.doc.title}" was last updated ${age} days ago; check it is still current` });
+      });
+      if (!sources.some(s => daysBetween(s.doc.updated, INDEX_DATE) > STALE_DAYS) && sources.length) checks.push({ status: 'ok', text: `All sources updated in the last ${STALE_DAYS} days` });
+    }
+    checks.push({ status: 'ok', text: settings.roleFilter ? `Access rules applied (${ROLES[r.role]})` : 'Access rules switched off in Trust & Safety' });
+    const pii = redact(plain).found;
+    checks.push({ status: pii.length ? 'bad' : 'ok', text: pii.length ? `${pii.length} personal data item(s) found in the answer` : 'No personal data in the answer' });
+
+    let confidence = 'Medium';
+    if (abstained) confidence = 'Low';
+    else if (topRes && topRes.bmRank === 1 && (topRes.entRank === 1 || !r.links.length)) confidence = 'High';
+
+    // --- the prompt a production LLM would receive ---
+    const prompt = [
+      'SYSTEM: You are CloudLexis, an assistant for Nimbus Cloud employees.',
+      'Answer only from the CONTEXT. Use Nimbus product names. Cite sources as [n].',
+      'If the CONTEXT does not contain the answer, say so. Never invent prices or specs.',
+      '',
+      'TERM MAP: ' + (r.links.filter(l => !l.implied).map(l => `${l.mention} -> ${l.target}`).join('; ') || 'none'),
+      '',
+      'CONTEXT:',
+      ...r.results.slice(0, 3).map((x, i) => `[${i + 1}] ${x.chunk.doc.title}: ${x.chunk.text}`),
+      '',
+      'QUESTION: ' + query
+    ].join('\n');
+
+    const usedChunks = [...new Set(evidence.map(e => e.chunk.id))];
+    return { r, intent, specRow, usedChunks, coverage, html: parts.map(p => `<p>${p}</p>`).join(''), sources, checks, confidence, abstained, watch: watchConcept && sources.length ? watchConcept.watch : null, links, prompt };
+  }
+
+  /* -------------------------------------------------------------------
+     Term Translator: rewrite a sentence with Nimbus names.
+     ------------------------------------------------------------------- */
+  function translateSentence(text) {
+    const { ents } = recognise(text, { generic: false });
+    const links = link(ents);
+    let out = '';
+    let pos = 0;
+    const reps = [];
+    ents.forEach(e => {
+      const l = links.find(x => x.ent === e);
+      if (!l || !l.from || l.from === 'nimbus') return;
+      const target = l.kind === 'service' ? l.concept.nimbus.name : l.kind === 'sku' ? l.target : l.region.nimbus;
+      let before = escHtml(text.slice(pos, e.start));
+      // fix "a"/"an" in front of the new name
+      const vowel = /^[aeiou]/i.test(target) || /^(NES|NOS|NBD|NPN|NTB|NMS|NAM|NCK|NKS)\b/.test(target);
+      before = before.replace(/\b(a|an) $/i, (m0, art) => (vowel ? (art[0] === 'A' ? 'An ' : 'an ') : (art[0] === 'A' ? 'A ' : 'a ')));
+      out += before + `<mark title="was: ${escHtml(e.text)}">${escHtml(target)}</mark>`;
+      reps.push({ from: e.text, to: target, kind: l.kind, provider: l.from, how: l.how });
+      pos = e.end;
+    });
+    out += escHtml(text.slice(pos));
+    return { html: out, reps };
+  }
+
+  /* -------------------------------------------------------------------
+     Offline evaluation on the demo test set (document-level ranks).
+     ------------------------------------------------------------------- */
+  const MODES = [
+    { id: 'bm25', label: 'A. BM25 on the raw question' },
+    { id: 'rewrite', label: 'B. + entity linking and query rewrite' },
+    { id: 'full', label: 'C. + entity ranking with RRF' }
+  ];
+  function docRanking(res) { const docs = []; res.results.forEach(x => { if (!docs.includes(x.chunk.doc.id)) docs.push(x.chunk.doc.id); }); return docs; }
+  function evaluate() {
+    const rows = TEST_SET.map(t => {
+      const ranks = {};
+      MODES.forEach(m => {
+        const i = docRanking(retrieve(t.q, { mode: m.id, roleFilter: false })).indexOf(t.gold);
+        ranks[m.id] = i >= 0 ? i + 1 : null;
+      });
+      return Object.assign({}, t, { ranks });
+    });
+    const calc = (subset, id) => {
+      const n = subset.length || 1;
+      return {
+        r1: subset.filter(x => x.ranks[id] === 1).length / n,
+        r3: subset.filter(x => x.ranks[id] && x.ranks[id] <= 3).length / n,
+        mrr: subset.reduce((s, x) => s + (x.ranks[id] ? 1 / x.ranks[id] : 0), 0) / n
+      };
+    };
+    const summary = MODES.map(m => ({ ...m, all: calc(rows, m.id), cross: calc(rows.filter(r => r.type === 'cross'), m.id), same: calc(rows.filter(r => r.type === 'same'), m.id) }));
+    return { rows, summary };
+  }
+
+  return { INDEX, INDEX_DATE, STALE_DAYS, INTENTS, MODES, famLabel, withArticle, tokenize, naiveSplit, isStop, recognise, link, classifyIntent, parseSku, familyOf, matchSku, rewrite, retrieve, answer, translateSentence, redact, evaluate, escHtml, daysBetween };
+})();
+</script>
+<script id="cl-app">
+/* =====================================================================
+   CloudLexis user interface
+   ---------------------------------------------------------------------
+   Seven pages, switched by the URL hash (#/ask, #/translator, ...).
+   Deep links used for the README screenshots:
+     #/ask?q=...        ask a question on load (q can repeat)
+     #/spec?sku=...     match an instance type on load
+     #/kb?doc=D03       open a document in the inspector
+     #/eval?run=1       run the evaluation on load
+   ===================================================================== */
+(() => {
+  const E = Engine;
+  const esc = E.escHtml;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const main = $('#main');
+
+  // localStorage wrapper: the page still works when storage is blocked
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('cloudlexis.' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('cloudlexis.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
+  };
+
+  /* ---------- icons (simple stroke icons, 24 x 24) ---------- */
+  const ICONS = {
+    chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
+    translate: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
+    cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+    book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z"/><path d="M4 19a2 2 0 0 1 2-2h13"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+    send: '<path d="M4 12l16-8-6 16-2-7-8-1z"/>',
+    check: '<path d="M5 12l5 5 9-10"/>',
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
+    up: '<path d="M7 11v9H4v-9h3zM7 11l4-8c1.7 0 3 1.3 3 3v3h5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H7"/>',
+    down: '<path d="M17 13V4h3v9h-3zM17 13l-4 8c-1.7 0-3-1.3-3-3v-3H5a2 2 0 0 1-2-2.3l1.2-7A2 2 0 0 1 6.2 4H17"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+    alert: '<path d="M12 3l10 18H2L12 3z"/><path d="M12 10v5M12 18v.5"/>',
+    arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    chevron: '<path d="M9 6l6 6-6 6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    route: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h8a3 3 0 0 0 0-6H8a3 3 0 0 1 0-6h8"/>',
+    table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/>',
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
+    play: '<path d="M7 4l13 8-13 8z"/>',
+    doc: '<path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/>',
+    shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+    flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+    chart: '<path d="M3 21h18M6 17v-6M11 17V6M16 17v-4"/>'
+  };
+  const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
+  const logo = cls => `<svg class="${cls}" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--primary)"/><path d="M6 21c3-7 7-10 10-10s7 3 10 10" stroke="var(--primary-ink)" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M6 21h20M11 21v-4M16 21v-6M21 21v-4" stroke="var(--primary-ink)" stroke-width="2" stroke-linecap="round"/></svg>`;
+  const pct = x => `${Math.round(x * 100)}%`;
+  const fix = (x, d = 3) => x.toFixed(d);
+  const money = x => x.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  const roleCan = doc => doc.roles.includes('all') || doc.roles.includes(state.role);
+  const accessText = doc => doc.roles.includes('all') ? 'Everyone' : doc.roles.map(r => ROLES[r]).join(', ');
+
+  /* ---------- app state ---------- */
+  const state = {
+    page: 'ask',
+    role: store.get('role', 'se'),
+    settings: Object.assign({ grounded: true, numberCheck: true, roleFilter: true, freshness: true }, store.get('settings', {})),
+    chat: [],
+    traceIdx: null,
+    audit: [],
+    tasks: store.get('tasks', null),
+    selectedConcept: 'compute.vm',
+    selectedDoc: 'D03',
+    kbType: 'All',
+    kbQuery: '',
+    glossCat: 'All',
+    glossQuery: '',
+    tin: null,
+    exIdx: 0,
+    specQ: 'm5.2xlarge',
+    evalResult: null,
+    quiz: null,
+    flashIdx: 4,
+    flashBack: false
+  };
+  const USER_ID = 'u_5f2a91';   // pseudonymous ID used in the audit log, never a name
+
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => t.classList.remove('show'), 2400);
+  }
+
+  /* =================================================================
+     Page 1. Ask: chat with answers, sources and a pipeline trace
+     ================================================================= */
+  const SUGGESTIONS = [
+    { title: 'Translate a term', icon: 'translate', items: ['Do we have something like S3 Glacier for cheap archive?', 'What is our version of EBS and how many IOPS can it do?', 'How do I connect two VPCs?'] },
+    { title: 'Size a migration', icon: 'cpu', items: ['What is our equivalent of an AWS EC2 m5.2xlarge?', 'Customer uses Standard_F8s_v2 on Azure, what do we have?', 'Which Nimbus region is closest to AWS me-central-1?'] },
+    { title: 'Policy and process', icon: 'book', items: ['What discount can I give without approval?', 'How much POC credit can a new customer get?', 'How much does a Redshift node cost in Nimbus?'] }
+  ];
+
+  function renderAsk(params) {
+    main.innerHTML = `
+      <div class="page-head">
+        <div><h1>Ask CloudLexis</h1><p class="sub">Ask in AWS, Azure or Google Cloud words. Answers come back in Nimbus Cloud terms, with sources you can open.</p></div>
+        <div class="head-actions">
+          <span class="badge badge-outline">${icon('layers', 'ic-sm')} ${DOCS.length} documents · ${E.INDEX.chunks.length} chunks · ${CONCEPTS.length} concepts</span>
+          <button class="btn btn-sm" id="newChat">${icon('plus', 'ic-sm')} New chat</button>
+        </div>
+      </div>
+      <div class="ask-grid">
+        <section class="card chat">
+          <div class="chat-log" id="chatLog"></div>
+          <form class="composer" id="composer">
+            <input id="q" placeholder="e.g. What is our equivalent of an AWS m5.2xlarge?" autocomplete="off" aria-label="Your question">
+            <button class="btn btn-primary" type="submit">${icon('send')} Ask</button>
+          </form>
+          <div class="composer-hint">Prototype: answers are built from retrieved sentences with templates. No large language model is called in this demo.</div>
+        </section>
+        <aside class="card trace" id="trace" aria-label="Pipeline trace"></aside>
+      </div>`;
+    $('#composer').addEventListener('submit', e => { e.preventDefault(); const q = $('#q').value.trim(); if (q) ask(q); });
+    $('#newChat').addEventListener('click', () => { state.chat = []; state.traceIdx = null; renderChat(); renderTrace(); });
+    const qs = params.getAll('q');
+    if (qs.length) { history.replaceState(null, '', '#/ask'); qs.forEach(q => ask(q, true)); }
+    renderChat();
+    renderTrace();
+    if (!qs.length) $('#q').focus({ preventScroll: true });
+  }
+
+  function ask(q, instant = false) {
+    const a = E.answer(q, { role: state.role, settings: state.settings });
+    const entry = { q, a, feedback: null, time: new Date(), pending: !instant };
+    state.chat.push(entry);
+    state.traceIdx = state.chat.length - 1;
+    state.audit.unshift({ time: entry.time, q: E.redact(q).text, role: state.role, intent: a.intent[0].label, sources: a.sources.map(s => s.doc.id), confidence: a.confidence, entry });
+    if ($('#q')) $('#q').value = '';
+    if (instant) return;
+    renderChat();
+    renderTrace();
+    setTimeout(() => { entry.pending = false; renderChat(); renderTrace(); }, 450);
+  }
+
+  function welcomeHtml() {
+    return `<div class="welcome">
+      <h2>Ask in any cloud’s language</h2>
+      <p>CloudLexis finds the Nimbus product, the right document and the exact numbers. Try one of these:</p>
+      <div class="suggest-groups">${SUGGESTIONS.map(g => `
+        <div class="suggest-group"><h3>${icon(g.icon, 'ic-sm')} ${g.title}</h3>
+          ${g.items.map(q => `<button class="chip suggest" data-q="${esc(q)}">${esc(q)}</button>`).join('')}
+        </div>`).join('')}
+      </div></div>`;
+  }
+
+  function answerHtml(m, i) {
+    const a = m.a;
+    const seen = new Set();
+    const maps = a.links.filter(l => l.from !== 'nimbus').map(l => {
+      const to = l.kind === 'service' ? (l.concept.nimbus.short || l.concept.nimbus.name) : l.kind === 'region' ? l.region.nimbus : l.target;
+      if (seen.has(to)) return '';
+      seen.add(to);
+      return `<span class="map-chip"><span class="from">${esc(l.mention)}</span>${icon('arrow', 'ic-sm')}<span class="to">${esc(to)}</span></span>`;
+    }).join('');
+    const confCls = { High: 'badge-ok', Medium: 'badge-warn', Low: 'badge-danger' }[a.confidence];
+    const nc = a.checks.find(c => c.text.startsWith('Numbers'));
+    const ncm = nc && nc.text.match(/(\d+) of (\d+)/);
+    const stale = a.checks.some(c => c.status === 'warn');
+    return `<div class="answer" data-i="${i}">
+      ${maps ? `<div class="map-chips">${maps}</div>` : ''}
+      <div class="answer-text">${a.html}</div>
+      ${a.watch ? `<div class="watch">${icon('alert')}<div><b>Watch out.</b> ${esc(a.watch)}</div></div>` : ''}
+      ${a.sources.length ? `<div class="sources">${a.sources.map(s => `
+        <div class="source" data-doc="${s.doc.id}" role="link" tabindex="0"><span class="cite">${s.n}</span>
+          <div><div>${esc(s.doc.title)}</div><div class="meta">${esc(s.doc.type)} · updated ${s.doc.updated} · ${s.doc.sensitivity}</div></div>${icon('chevron', 'ic-sm')}</div>`).join('')}</div>` : ''}
+      <div class="answer-foot">
+        <span class="badge ${confCls}">Confidence: ${a.confidence}</span>
+        ${ncm && +ncm[2] > 0 ? `<span class="badge ${ncm[1] === ncm[2] ? 'badge-ok' : 'badge-danger'}">${icon('check', 'ic-sm')} ${ncm[1]}/${ncm[2]} numbers checked</span>` : ''}
+        ${stale ? `<span class="badge badge-warn">${icon('clock', 'ic-sm')} Source may be out of date</span>` : ''}
+        <span class="spacer"></span>
+        <span class="row" style="gap:4px;flex-wrap:nowrap">
+        <button class="btn btn-sm btn-ghost" data-act="trace">${icon('route', 'ic-sm')} Trace</button>
+        <button class="icon-btn" data-act="copy" title="Copy answer" aria-label="Copy answer">${icon('copy', 'ic-sm')}</button>
+        <button class="icon-btn" data-act="up" title="Helpful" aria-label="Helpful" style="${m.feedback === 'up' ? 'color:var(--ok);border-color:var(--ok)' : ''}">${icon('up', 'ic-sm')}</button>
+        <button class="icon-btn" data-act="down" title="Not helpful" aria-label="Not helpful" style="${m.feedback === 'down' ? 'color:var(--danger);border-color:var(--danger)' : ''}">${icon('down', 'ic-sm')}</button></span>
+      </div></div>`;
+  }
+
+  function renderChat() {
+    const log = $('#chatLog');
+    if (!log) return;
+    if (!state.chat.length) {
+      log.innerHTML = welcomeHtml();
+      $$('.suggest', log).forEach(b => b.addEventListener('click', () => ask(b.dataset.q)));
+      return;
+    }
+    log.innerHTML = state.chat.map((m, i) => `
+      <div class="msg-user">${esc(m.q)}</div>
+      <div class="msg-bot">${logo('bot-avatar')}${m.pending ? '<div class="answer"><span class="typing"><i></i><i></i><i></i></span></div>' : answerHtml(m, i)}</div>`).join('');
+    $$('.source, .cite', log).forEach(el => el.addEventListener('click', () => { location.hash = `#/kb?doc=${el.dataset.doc}`; }));
+    $$('.answer[data-i]', log).forEach(card => {
+      const i = +card.dataset.i, m = state.chat[i];
+      $$('[data-act]', card).forEach(btn => btn.addEventListener('click', () => {
+        const act = btn.dataset.act;
+        if (act === 'trace') { state.traceIdx = i; renderTrace(); toast('Trace shows this answer'); }
+        if (act === 'copy') {
+          const text = card.querySelector('.answer-text').innerText;
+          try { navigator.clipboard.writeText(text).then(() => toast('Answer copied'), () => toast('Copy is not allowed here')); } catch (e) { toast('Copy is not allowed here'); }
+        }
+        if (act === 'up' || act === 'down') {
+          m.feedback = act;
+          const row = state.audit.find(x => x.entry === m);
+          if (row) row.feedback = act;
+          renderChat();
+          toast(act === 'up' ? 'Thanks. Marked as helpful.' : 'Thanks. Sent to the content owners for review.');
+        }
+      }));
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function markEntities(text, ents) {
+    let out = '', pos = 0;
+    ents.forEach(e => {
+      if (e.start < pos) return;
+      out += esc(text.slice(pos, e.start)) + `<span class="ent ent-${e.label}" title="${e.label}${e.fuzzy ? ' (fuzzy)' : ''}">${esc(e.text)}<small>${e.label}</small></span>`;
+      pos = e.end;
+    });
+    return out + esc(text.slice(pos));
+  }
+  const legendHtml = () => `<div class="legend">${['PROVIDER', 'SERVICE', 'SKU', 'SPEC', 'REGION'].map(l => `<span><i class="ent-${l}" style="background:var(--ent-${l.toLowerCase()})"></i>${l}</span>`).join('')}</div>`;
+
+  const step = (n, title, what, body, planned) => `
+    <div class="step"><div class="step-n">${n}</div><div>
+      <h3>${title}</h3><p class="what">${what}</p>${body}
+      ${planned ? `<div class="planned">${icon('info', 'ic-sm')}<span>${planned}</span></div>` : ''}
+    </div></div>`;
+
+  function renderTrace() {
+    const box = $('#trace');
+    if (!box) return;
+    const m = state.chat[state.traceIdx];
+    if (!m || m.pending) {
+      box.innerHTML = `<div class="card-head"><div><h2>How the answer is built</h2><p>Every step of the NLP and RAG pipeline for the selected answer.</p></div></div>
+        <div class="trace-body"><div class="empty">${icon('route')}<p style="margin-top:8px">Ask a question to see the seven steps: tokenise, intent, entities, linking, rewrite, retrieval and checks.</p></div></div>`;
+      return;
+    }
+    const a = m.a, r = a.r;
+    const toks = r.rec.tokens.map(t => `<span class="tok${t.protected ? ' protected' : ''}${E.isStop(t) ? ' stop' : ''}" title="${t.protected ? 'kept as one token' : E.isStop(t) ? 'stop word, not used for keyword search' : 'token'}">${esc(t.text)}</span>`).join('');
+    const broken = r.rec.tokens.filter(t => t.protected).map(t => `<div class="broken">A plain word splitter would give: ${E.naiveSplit(t.text).map(x => `<span class="tok">${esc(x)}</span>`).join(' ')}</div>`).join('');
+    const intents = a.intent.slice(0, 4).map((it, i) => `<div class="intent-row${i === 0 ? ' top' : ''}"><span>${it.label}</span><div class="bar"><i style="width:${(it.prob * 100).toFixed(0)}%"></i></div><span class="num">${pct(it.prob)}</span></div>`).join('');
+    const links = r.links.length ? r.links.map(l => `
+      <div class="link-row"><span>${esc(l.mention)} <span class="muted small">${l.from ? PROVIDERS[l.from] : 'generic'}</span></span>${icon('arrow', 'ic-sm')}<b class="nimbus-cell">${esc(l.target)}</b><span class="how">${esc(l.how)}</span></div>`).join('')
+      : '<p class="muted small">No product names found, so the question is searched as written.</p>';
+    const rows = r.results.slice(0, 5).map((x, i) => `
+      <tr class="${a.usedChunks.includes(x.chunk.id) ? 'used' : ''}">
+        <td>${i + 1}</td><td><a href="#/kb?doc=${x.chunk.doc.id}">${esc(x.chunk.doc.title)}</a> <span class="muted">#${x.chunk.n}</span></td>
+        <td class="num">${x.bmRank ?? '–'}</td><td class="num">${x.entRank ?? '–'}</td><td class="num">${fix(x.fused, 4)}</td></tr>`).join('');
+    const filt = state.settings.roleFilter
+      ? `Access filter for ${ROLES[r.role]}: ${r.visibleCount} of ${E.INDEX.chunks.length} chunks can be searched${r.hiddenDocs.length ? `, ${r.hiddenDocs.length} documents hidden` : ''}.`
+      : 'Access filter is switched off in Trust & Safety.';
+    const spec = a.specRow ? `<p class="small" style="margin-top:8px;display:flex;gap:6px">${icon('table', 'ic-sm')}<span>Structured lookup: the row for <code>${a.specRow.code}</code> is read from “${esc(a.specRow.doc.title)}”.</span></p>` : '';
+    const checks = a.checks.map(c => `<div class="check ${c.status}">${icon(c.status === 'ok' ? 'check' : c.status === 'warn' ? 'alert' : 'x')}<span>${esc(c.text)}</span></div>`).join('');
+
+    box.innerHTML = `
+      <div class="card-head"><div><h2>How the answer is built</h2><p>${esc(m.q)}</p></div><span class="badge badge-primary">7 steps</span></div>
+      <div class="trace-body">
+        ${step(1, 'Tokenise', 'Split the question into tokens. Product codes and regions stay in one piece; faded tokens are stop words.', `<div class="tokens">${toks}</div>${broken}`, 'Planned: spaCy tokenizer with the same custom rules')}
+        ${step(2, 'Classify intent', 'Decide what kind of question this is. The intent changes which sentences are preferred and which checks run.', intents, 'Prototype: keyword model. Planned: DistilBERT fine-tuned on labelled questions')}
+        ${step(3, 'Recognise entities', 'Find providers, services, instance types (SKU), specs and regions.', `<div class="qtext">${markEntities(r.query, r.rec.ents)}</div>${legendHtml()}`, 'Prototype: glossary, patterns and fuzzy matching. Planned: add a fine-tuned BERT NER model for new names')}
+        ${step(4, 'Link to Nimbus terms', 'Tie each mention to one concept in the cross-cloud glossary.', links, 'Order: exact alias, then fuzzy match; planned: embedding similarity as a last step')}
+        ${step(5, 'Rewrite the query', 'Add the Nimbus names, so keyword search can reach Nimbus documents.', `<div class="rewrite">${esc(r.query)}${r.rewrite.added.map(x => ` <mark>${esc(x)}</mark>`).join('')}</div>`, '')}
+        ${step(6, 'Retrieve and rank', filt, `<table class="mini-table"><thead><tr><th>#</th><th>Chunk</th><th class="num">BM25</th><th class="num">Entity</th><th class="num">RRF</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="muted">No matching chunks</td></tr>'}</tbody></table>${spec}`, 'Planned: add dense retrieval (bge-small-en-v1.5) to the fusion and a cross-encoder reranker')}
+        ${step(7, 'Generate and check', 'Write the answer from the retrieved text only, then check it before it is shown.', `${checks}<details class="prompt"><summary>Show the prompt a production LLM would receive</summary><pre>${esc(a.prompt)}</pre></details>`, 'Prototype: template answer. Planned: Llama 3.1 8B Instruct, self-hosted')}
+      </div>`;
+  }
+
+  /* =================================================================
+     Page 2. Term Translator: sentence rewrite + glossary
+     ================================================================= */
+  const EXAMPLES = [
+    'The customer runs 40 m5.2xlarge EC2 instances behind an ALB in us-east-1 and keeps old logs in S3 Glacier.',
+    'They use AKS with Azure Monitor and keep their secrets in Key Vault in uaenorth.',
+    'Files land in Cloud Storage, Cloud Run functions clean them, and the results are loaded into BigQuery.'
+  ];
+
+  function renderTranslator() {
+    if (state.tin === null) state.tin = EXAMPLES[0];
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Term Translator</h1><p class="sub">Paste a sentence from a customer email or call note. Product names from other clouds are swapped for Nimbus names.</p></div></div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head"><div><h2>Translate a sentence</h2><p>Uses the same entity recognition and linking as Ask.</p></div></div>
+        <div class="card-body grid g-2">
+          <div>
+            <label class="small muted" for="tin">Customer wording</label>
+            <textarea class="textarea" id="tin" style="margin-top:4px">${esc(state.tin)}</textarea>
+            <div class="row" style="margin-top:8px">
+              <button class="btn btn-primary btn-sm" id="tgo">${icon('translate', 'ic-sm')} Translate</button>
+              <button class="btn btn-sm" id="tex">${icon('refresh', 'ic-sm')} Another example</button>
+            </div>
+          </div>
+          <div>
+            <span class="small muted">In Nimbus terms</span>
+            <div class="translated" id="tout" style="margin-top:4px"></div>
+            <div id="treps" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="grid g-main-side">
+        <div class="card">
+          <div class="card-head"><div><h2>Cross-cloud glossary</h2><p>${CONCEPTS.length} concepts across four providers. Click a row for details.</p></div>
+            <input class="input" id="gq" placeholder="Search any name, e.g. vnet" style="max-width:220px" value="${esc(state.glossQuery)}" aria-label="Search glossary"></div>
+          <div class="card-body" style="padding-bottom:4px"><div class="row" id="gcats"></div></div>
+          <div class="table-wrap"><table class="table" id="gtable"></table></div>
+        </div>
+        <div class="card" id="gdetail"></div>
+      </div>`;
+    const run = () => {
+      state.tin = $('#tin').value;
+      const t = E.translateSentence(state.tin);
+      $('#tout').innerHTML = t.html || '<span class="muted">Nothing to translate.</span>';
+      $('#treps').innerHTML = t.reps.length
+        ? `<table class="mini-table"><thead><tr><th>Found</th><th>Type</th><th>Nimbus name</th></tr></thead><tbody>${t.reps.map(x => `<tr><td>${esc(x.from)} <span class="muted">${PROVIDERS[x.provider] || ''}</span></td><td>${x.kind === 'sku' ? 'Instance type' : x.kind === 'region' ? 'Region' : 'Service'}</td><td class="nimbus-cell">${esc(x.to)}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="small muted">No product names from other clouds found.</p>';
+    };
+    $('#tgo').addEventListener('click', run);
+    $('#tex').addEventListener('click', () => { state.exIdx = (state.exIdx + 1) % EXAMPLES.length; $('#tin').value = EXAMPLES[state.exIdx]; run(); });
+    run();
+
+    const cats = ['All', ...new Set(CONCEPTS.map(c => c.category))];
+    $('#gcats').innerHTML = cats.map(c => `<button class="chip${c === state.glossCat ? ' active' : ''}" data-c="${c}">${c}</button>`).join('');
+    $$('#gcats .chip').forEach(b => b.addEventListener('click', () => { state.glossCat = b.dataset.c; renderTranslator(); }));
+    $('#gq').addEventListener('input', e => { state.glossQuery = e.target.value; drawGlossary(); });
+    drawGlossary();
+  }
+
+  function drawGlossary() {
+    const q = state.glossQuery.trim().toLowerCase();
+    const hl = s => { if (!q) return esc(s); const i = s.toLowerCase().indexOf(q); return i < 0 ? esc(s) : esc(s.slice(0, i)) + `<span class="hit">${esc(s.slice(i, i + q.length))}</span>` + esc(s.slice(i + q.length)); };
+    const rows = CONCEPTS.filter(c => (state.glossCat === 'All' || c.category === state.glossCat) &&
+      (!q || ['aws', 'azure', 'gcp', 'nimbus'].some(p => c[p].name.toLowerCase().includes(q) || c[p].aliases.some(a => a.includes(q))) || c.generic.some(a => a.includes(q))));
+    const cell = (c, p) => `<div class="provider-cell">${hl(c[p].name)}</div>`;
+    $('#gtable').innerHTML = `<thead><tr><th>Concept</th><th>AWS</th><th>Azure</th><th>Google Cloud</th><th>Nimbus Cloud</th></tr></thead><tbody>${rows.map(c => `
+      <tr class="clickable${c.id === state.selectedConcept ? ' selected' : ''}" data-id="${c.id}">
+        <td><div class="provider-cell"><b>${esc(c.category)}</b><div class="alias">${esc(c.plain)}</div></div></td>
+        <td>${cell(c, 'aws')}</td><td>${cell(c, 'azure')}</td><td>${cell(c, 'gcp')}</td><td class="nimbus-cell">${hl(c.nimbus.name)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No match</td></tr>'}</tbody>`;
+    $$('#gtable tr.clickable').forEach(tr => tr.addEventListener('click', () => { state.selectedConcept = tr.dataset.id; drawGlossary(); }));
+    drawConcept();
+  }
+
+  function drawConcept() {
+    const c = CONCEPTS.find(x => x.id === state.selectedConcept);
+    const doc = DOCS.find(d => d.id === c.doc);
+    const aliases = [...new Set(['aws', 'azure', 'gcp', 'nimbus'].flatMap(p => c[p].aliases).concat(c.generic))];
+    $('#gdetail').innerHTML = `
+      <div class="card-head"><div class="detail-title"><div><span class="badge badge-primary">${esc(c.category)}</span><h2 style="margin-top:8px">${esc(c.nimbus.name)}</h2></div></div></div>
+      <div class="card-body stack">
+        <p>${esc(c.plain)}</p>
+        <dl class="kv">
+          <dt>AWS</dt><dd>${esc(c.aws.name)}</dd>
+          <dt>Azure</dt><dd>${esc(c.azure.name)}</dd>
+          <dt>Google Cloud</dt><dd>${esc(c.gcp.name)}</dd>
+          <dt>Main document</dt><dd><a href="#/kb?doc=${doc.id}">${esc(doc.title)}</a></dd>
+        </dl>
+        <div class="watch">${icon('alert')}<div><b>Watch out.</b> ${esc(c.watch)}</div></div>
+        <div><div class="small muted" style="margin-bottom:6px">Spellings the entity recogniser understands (${aliases.length})</div>
+          <div class="tag-list">${aliases.map(a => `<span class="badge">${esc(a)}</span>`).join('')}</div></div>
+        <button class="btn btn-sm" id="askConcept">${icon('chat', 'ic-sm')} Ask about ${esc(c.aws.name)}</button>
+      </div>`;
+    $('#askConcept').addEventListener('click', () => { location.hash = '#/ask?q=' + encodeURIComponent(`What is our version of ${c.aws.name}?`); });
+  }
+
+  /* =================================================================
+     Page 3. Spec Matcher: one instance or a whole inventory
+     ================================================================= */
+  const QUICK = ['m5.2xlarge', 'r5.4xlarge', 'Standard_F8s_v2', 'n2-highmem-8', 'g5.2xlarge', 'Standard_NC8as_T4_v3', '16 vCPU 64 GB'];
+  const BULK_SAMPLE = ['web-01, m5.2xlarge, 6', 'web-02, m5.xlarge, 4', 'api-01, c5.2xlarge, 3', 'db-01, r5.4xlarge, 2', 'ml-01, g5.2xlarge, 1', 'batch-01, Standard_F16s_v2, 2', 'analytics-01, n2-highmem-8, 2'].join('\n');
+  const HOURS_PER_MONTH = 730;
+
+  // Read specs from free text: a product code first, otherwise "8 vCPU 32 GB"
+  function readSpec(text) {
+    const { ents } = E.recognise(text);
+    const sku = ents.find(e => e.label === 'SKU');
+    if (sku) { const s = E.parseSku(sku.text, sku.provider); if (s) return { ...s, code: sku.text, provider: sku.provider }; }
+    const v = ents.find(e => e.label === 'SPEC' && e.unit === 'vcpu'), m = ents.find(e => e.label === 'SPEC' && e.unit === 'mem'), g = ents.find(e => e.label === 'SPEC' && e.unit === 'gpu');
+    if (v && m) return { vcpu: v.value, mem: m.value, gpu: g ? g.value : 0, code: text.trim(), provider: null, source: 'specs you typed' };
+    return null;
+  }
+
+  function renderSpec(params) {
+    if (params.get('sku')) { state.specQ = params.get('sku'); history.replaceState(null, '', '#/spec'); }
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Spec Matcher</h1><p class="sub">Find the closest Nimbus Elastic Server type for an instance from another cloud, or size a whole customer inventory at once.</p></div></div>
+      <div class="grid g-2 spec-grid">
+        <div class="card">
+          <div class="card-head"><div><h2>Find the closest instance type</h2><p>Type a product code or plain specs, e.g. “16 vCPU 64 GB”.</p></div></div>
+          <div class="card-body stack">
+            <form class="row" id="specForm" style="flex-wrap:nowrap"><input class="input" id="specIn" value="${esc(state.specQ)}" aria-label="Instance type or specs"><button class="btn btn-primary">${icon('search', 'ic-sm')} Match</button></form>
+            <div class="row">${QUICK.map(q => `<button class="chip" data-q="${q}">${q}</button>`).join('')}</div>
+            <div id="specParsed"></div>
+            <div id="specResults"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h2>Bulk sizing</h2><p>One line per server: name, instance type, count.</p></div></div>
+          <div class="card-body stack">
+            <textarea class="textarea mono" id="bulkIn" style="min-height:150px" aria-label="Inventory">${esc(BULK_SAMPLE)}</textarea>
+            <div class="row"><button class="btn btn-primary btn-sm" id="bulkGo">${icon('play', 'ic-sm')} Size all</button><button class="btn btn-sm" id="bulkCsv">${icon('download', 'ic-sm')} Download CSV</button></div>
+            <div id="bulkOut"></div>
+            <p class="small muted">List prices are demo values. Real quotes go through Deal Desk.</p>
+          </div>
+        </div>
+      </div>`;
+    $('#specForm').addEventListener('submit', e => { e.preventDefault(); state.specQ = $('#specIn').value; drawMatch(); });
+    $$('[data-q]').forEach(b => b.addEventListener('click', () => { state.specQ = b.dataset.q; $('#specIn').value = b.dataset.q; drawMatch(); }));
+    $('#bulkGo').addEventListener('click', drawBulk);
+    $('#bulkCsv').addEventListener('click', downloadCsv);
+    drawMatch();
+    drawBulk();
+  }
+
+  function drawMatch() {
+    const spec = readSpec(state.specQ);
+    if (!spec) {
+      $('#specParsed').innerHTML = `<div class="callout callout-warn">${icon('alert')}<div>I could not read a product code or specs. Try “m5.2xlarge” or “8 vCPU 32 GB”.</div></div>`;
+      $('#specResults').innerHTML = '';
+      return;
+    }
+    const fam = E.familyOf(spec);
+    $('#specParsed').innerHTML = `<div class="spec-parsed">
+      <div><span>Provider</span><b>${spec.provider ? PROVIDERS[spec.provider] : 'Typed specs'}</b></div>
+      <div><span>vCPU</span><b>${spec.vcpu}</b></div>
+      <div><span>Memory</span><b>${spec.mem} GiB</b></div>
+      <div><span>GPU</span><b>${spec.gpu || 0}</b></div>
+      <div><span>Family</span><b style="font-size:13px;margin-top:3px">${FAMILY_NAMES[fam]}</b></div></div>
+      <p class="small muted" style="margin-top:6px">Specs from: ${esc(spec.source)}.</p>`;
+    const res = E.matchSku(spec).slice(0, 3);
+    $('#specResults').innerHTML = res.map((m, i) => `
+      <div class="match">
+        <div>${i === 0 ? '<div class="best-label">Best match</div>' : ''}
+          <div class="code">${m.sku.code}</div>
+          <div class="small muted">${FAMILY_NAMES[m.sku.family]} · ${m.sku.vcpu} vCPU · ${m.sku.mem} GiB${m.sku.gpu ? ` · ${m.sku.gpu} GPU` : ''} · ${m.sku.net}</div>
+          <div class="why">${m.reasons.map(r => `<span class="badge ${r.ok ? 'badge-ok' : 'badge-warn'}">${icon(r.ok ? 'check' : 'alert', 'ic-sm')} ${esc(r.t)}</span>`).join('')}</div>
+        </div>
+        <div class="score"><b>${m.score}%</b><div class="small muted">spec match</div><div class="bar" style="margin:6px 0"><i style="width:${m.score}%"></i></div>
+          <div class="small">${m.sku.price.toFixed(3)} USD/h · ${money(m.sku.price * HOURS_PER_MONTH)}/mo</div></div>
+      </div>`).join('');
+  }
+
+  function sizeInventory() {
+    return $('#bulkIn').value.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+      const [name, code = '', countRaw] = line.split(',').map(x => x.trim());
+      const count = Math.max(1, parseInt(countRaw, 10) || 1);
+      const tok = E.tokenize(code).find(t => t.protected && t.kind === 'sku');
+      const spec = tok ? E.parseSku(tok.text, tok.provider) : null;
+      if (!spec) return { name, code, count, error: true };
+      const best = E.matchSku(spec)[0];
+      return { name, code, count, provider: tok.provider, spec, best, monthly: count * HOURS_PER_MONTH * best.sku.price };
+    });
+  }
+
+  function drawBulk() {
+    const rows = sizeInventory();
+    const total = rows.reduce((s, r) => s + (r.monthly || 0), 0);
+    $('#bulkOut').innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Server</th><th>From</th><th>Nimbus type</th><th class="num">Match</th><th class="num">Est. per month</th></tr></thead><tbody>
+      ${rows.map(r => r.error ? `<tr><td>${esc(r.name)}</td><td colspan="4" class="muted">Could not read “${esc(r.code)}”</td></tr>` : `
+        <tr><td>${esc(r.name)} <span class="muted">×${r.count}</span></td><td><span class="mono nowrap">${esc(r.code)}</span><div class="small muted">${PROVIDERS[r.provider]} · ${r.spec.vcpu}/${r.spec.mem}</div></td>
+        <td class="mono nimbus-cell nowrap">${r.best.sku.code}</td><td class="num">${r.best.score}%</td><td class="num">${money(r.monthly)}</td></tr>`).join('')}
+      <tr><td colspan="4"><b>Total list price</b></td><td class="num"><b>${money(total)}</b></td></tr></tbody></table></div>`;
+  }
+
+  function downloadCsv() {
+    const rows = sizeInventory().filter(r => !r.error);
+    const csv = ['server,source_type,provider,count,nimbus_type,match_percent,est_monthly_usd',
+      ...rows.map(r => [r.name, r.code, PROVIDERS[r.provider], r.count, r.best.sku.code, r.best.score, r.monthly.toFixed(2)].join(','))].join('\n');
+    try {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = 'nimbus-sizing.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      toast('Sizing sheet downloaded');
+    } catch (e) { toast('Download is not allowed here'); }
+  }
+
+  /* =================================================================
+     Page 4. Knowledge Base: ingestion pipeline, documents, inspector
+     ================================================================= */
+  function renderKB(params) {
+    if (params.get('doc')) { state.selectedDoc = params.get('doc'); history.replaceState(null, '', '#/kb'); }
+    const I = E.INDEX;
+    const pstep = (name, detail, badge, cls = 'badge-ok') => `<div class="pstep"><b>${name}</b><span>${detail}</span><div><span class="badge ${cls}">${badge}</span></div></div>`;
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Knowledge Base</h1><p class="sub">The documents CloudLexis can search, how they are prepared, and who may read them.</p></div>
+        <div class="head-actions"><button class="btn btn-sm" id="reindex">${icon('refresh', 'ic-sm')} Rebuild index</button></div></div>
+      <div class="grid g-4" style="margin-bottom:16px">
+        <div class="card stat"><div class="label">Documents</div><div class="value">${DOCS.length}</div><div class="hint">${DOCS.filter(roleCan).length} visible to ${ROLES[state.role]}</div></div>
+        <div class="card stat"><div class="label">Chunks</div><div class="value">${I.chunks.length}</div><div class="hint">up to 3 sentences each</div></div>
+        <div class="card stat"><div class="label">Entity tags</div><div class="value">${I.tagCount}</div><div class="hint">added at index time</div></div>
+        <div class="card stat"><div class="label">Personal data redacted</div><div class="value">${I.redactions.length}</div><div class="hint">before anything is indexed</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head"><div><h2>Ingestion pipeline</h2><p>Runs every night and whenever a document owner publishes a change. Index built ${E.INDEX_DATE}.</p></div></div>
+        <div class="card-body"><div class="pipeline">
+          ${pstep('1 Parse', 'HTML, Markdown, PDF to text; keep headings and tables', `${DOCS.length} docs`)}
+          ${pstep('2 Clean', 'Remove menus and footers; fix spacing and Unicode', 'done')}
+          ${pstep('3 Redact', 'E-mails, phones, keys and names become tags', `${I.redactions.length} items`)}
+          ${pstep('4 Chunk', 'Split by sentence; title added to each chunk', `${I.chunks.length} chunks`)}
+          ${pstep('5 Tag', 'Entity recogniser marks products, types, regions', `${I.tagCount} tags`)}
+          ${pstep('6 Embed', 'bge-small-en-v1.5, 384 numbers per chunk', 'planned', 'badge-outline')}
+          ${pstep('7 Index', 'BM25 keyword index; vector index planned', 'BM25 ready')}
+        </div></div>
+      </div>
+      <div class="grid g-main-side">
+        <div class="card">
+          <div class="card-head"><div><h2>Documents</h2><p>Access rules are stored with each chunk and applied before search.</p></div>
+            <input class="input" id="kbq" placeholder="Filter by title" style="max-width:200px" value="${esc(state.kbQuery)}" aria-label="Filter documents"></div>
+          <div class="card-body" style="padding-bottom:4px"><div class="row" id="kbtypes"></div></div>
+          <div class="table-wrap"><table class="table" id="kbtable"></table></div>
+        </div>
+        <div class="stack">
+          <div class="card" id="inspector"></div>
+          <div class="card">
+            <div class="card-head"><div><h2>Try the redaction step</h2><p>The same rules run on every document before indexing.</p></div></div>
+            <div class="card-body stack">
+              <textarea class="textarea" id="redIn">Contact: Omar Haddad, omar.h@example.com, +971 55 123 4567. Test key AKIAIOSFODNN7EXAMPLE on host 10.0.4.12.</textarea>
+              <button class="btn btn-sm" id="redGo" style="align-self:flex-start">${icon('shield', 'ic-sm')} Redact</button>
+              <div class="translated" id="redOut"></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    const types = ['All', ...new Set(DOCS.map(d => d.type))];
+    $('#kbtypes').innerHTML = types.map(t => `<button class="chip${t === state.kbType ? ' active' : ''}" data-t="${t}">${t}</button>`).join('');
+    $$('#kbtypes .chip').forEach(b => b.addEventListener('click', () => { state.kbType = b.dataset.t; renderKB(new URLSearchParams()); }));
+    $('#kbq').addEventListener('input', e => { state.kbQuery = e.target.value; drawDocs(); });
+    $('#reindex').addEventListener('click', () => toast(`Index rebuilt: ${I.chunks.length} chunks, ${I.tagCount} entity tags`));
+    const runRedact = () => {
+      const r = E.redact($('#redIn').value);
+      $('#redOut').innerHTML = esc(r.text).replace(/\[([A-Z_]+)\]/g, '<span class="redacted">[$1]</span>') + `<div class="small muted" style="margin-top:6px">${r.found.length} item(s) redacted</div>`;
+    };
+    $('#redGo').addEventListener('click', runRedact);
+    runRedact();
+    drawDocs();
+  }
+
+  function drawDocs() {
+    const q = state.kbQuery.trim().toLowerCase();
+    const docs = DOCS.filter(d => (state.kbType === 'All' || d.type === state.kbType) && (!q || d.title.toLowerCase().includes(q)));
+    const sensCls = { Public: 'badge-ok', Internal: 'badge-primary', Confidential: 'badge-accent' };
+    $('#kbtable').innerHTML = `<thead><tr><th>Title</th><th>Access</th><th>Level</th><th>Updated</th><th class="num">Chunks</th></tr></thead><tbody>${docs.map(d => {
+      const age = E.daysBetween(d.updated, E.INDEX_DATE);
+      return `<tr class="clickable${d.id === state.selectedDoc ? ' selected' : ''}" data-id="${d.id}">
+        <td><div>${roleCan(d) ? '' : icon('lock', 'ic-sm') + ' '}${esc(d.title)}</div><div class="small muted">${d.id} · ${esc(d.type)}</div></td>
+        <td class="small">${esc(accessText(d))}</td>
+        <td><span class="badge ${sensCls[d.sensitivity]}">${d.sensitivity}</span></td>
+        <td class="small">${d.updated}${age > E.STALE_DAYS ? ` <span class="badge badge-warn">${age}d</span>` : ''}</td>
+        <td class="num">${E.INDEX.chunks.filter(c => c.doc.id === d.id).length}</td></tr>`;
+    }).join('')}</tbody>`;
+    $$('#kbtable tr.clickable').forEach(tr => tr.addEventListener('click', () => { state.selectedDoc = tr.dataset.id; drawDocs(); }));
+    drawInspector();
+  }
+
+  function drawInspector() {
+    const d = DOCS.find(x => x.id === state.selectedDoc) || DOCS[0];
+    const chunks = E.INDEX.chunks.filter(c => c.doc.id === d.id);
+    const box = $('#inspector');
+    if (!roleCan(d)) {
+      box.innerHTML = `<div class="card-head"><div><h2>${esc(d.title)}</h2><p>${d.id} · ${esc(d.type)}</p></div><span class="badge badge-accent">${icon('lock', 'ic-sm')} Restricted</span></div>
+        <div class="card-body"><div class="callout">${icon('lock')}<div>This document is open to <b>${esc(accessText(d))}</b> only. You are viewing as ${ROLES[state.role]}, so its chunks are removed before search and never reach the answer. Switch the role in the top bar to compare.</div></div></div>`;
+      return;
+    }
+    const meta = { doc_id: d.id, title: d.title, type: d.type, roles: d.roles, sensitivity: d.sensitivity, updated: d.updated, chunks: chunks.length, concepts: [...new Set(chunks.flatMap(c => c.concepts))], instance_types: [...new Set(chunks.flatMap(c => c.skus))] };
+    box.innerHTML = `
+      <div class="card-head"><div><h2>${esc(d.title)}</h2><p>${d.id} · ${esc(d.type)} · open to ${esc(accessText(d))}</p></div><span class="badge badge-primary">${chunks.length} chunks</span></div>
+      <div class="card-body">
+        ${chunks.map(c => `<div class="chunk"><div class="chunk-head"><span>Chunk ${c.n} · ${c.len} index terms</span><span>${c.concepts.map(x => `<span class="badge">${x}</span>`).join(' ')}</span></div>
+          ${markEntities(c.text, c.ents).replace(/\[([A-Z_]+)\]/g, '<span class="redacted">[$1]</span>')}</div>`).join('')}
+        <div style="margin-top:12px">${legendHtml()}</div>
+        <details class="prompt" style="margin-top:10px"><summary>Metadata stored with each chunk</summary><pre class="json">${esc(JSON.stringify(meta, null, 2))}</pre></details>
+      </div>`;
+  }
+
+  /* =================================================================
+     Page 5. Onboarding: role-based 30-day path, flashcards and quiz
+     ================================================================= */
+  const PATHS = {
+    se: [
+      { week: 'Week 1 · Core services', tasks: [['Learn the 18 core Nimbus service names', '#/translator'], ['Finish the Core Services course', null], ['Set up your sandbox account', null], ['Read the NES overview', '#/kb?doc=D01']] },
+      { week: 'Week 2 · Compute and storage', tasks: [['Learn the four NES instance families', '#/kb?doc=D02'], ['Size three sample migrations in Spec Matcher', '#/spec'], ['Read about the NOS storage tiers', '#/kb?doc=D08']] },
+      { week: 'Week 3 · Customers', tasks: [['Read the AWS migration playbook', '#/kb?doc=D24'], ['Shadow two customer calls', null], ['Build a demo in the sandbox account', null]] },
+      { week: 'Week 4 · Commercials', tasks: [['Read the discount approval policy', '#/kb?doc=D21'], ['Pass the service-name quiz on this page', null], ['Present a mock solution to your mentor', null]] }
+    ],
+    support: [
+      { week: 'Week 1 · Core services', tasks: [['Learn the 18 core Nimbus service names', '#/translator'], ['Read the NES overview', '#/kb?doc=D01'], ['Set up your sandbox account', null]] },
+      { week: 'Week 2 · Operations', tasks: [['Read the NES host failure runbook', '#/kb?doc=D25'], ['Learn Nimbus Watch alarms', '#/kb?doc=D18'], ['Shadow three support tickets', null]] },
+      { week: 'Week 3 · Customers', tasks: [['Read the SLA reference', '#/kb?doc=D28'], ['Handle a Severity 3 ticket with a mentor', null]] }
+    ],
+    am: [
+      { week: 'Week 1 · Core services', tasks: [['Learn the 18 core Nimbus service names', '#/translator'], ['Read the regions reference', '#/kb?doc=D26'], ['Meet your solutions engineer', null]] },
+      { week: 'Week 2 · Commercials', tasks: [['Read the discount approval policy', '#/kb?doc=D21'], ['Read the POC credits policy', '#/kb?doc=D22'], ['Fill in an account plan', '#/kb?doc=D27']] }
+    ]
+  };
+  function taskState() {
+    if (!state.tasks) state.tasks = { se: { 'se-0-0': true, 'se-0-1': true, 'se-0-2': true, 'se-0-3': true, 'se-1-0': true }, support: { 'support-0-0': true }, am: {} };
+    return state.tasks[state.role] || (state.tasks[state.role] = {});
+  }
+  function progress() {
+    const done = taskState();
+    const all = PATHS[state.role].flatMap((w, wi) => w.tasks.map((_, ti) => `${state.role}-${wi}-${ti}`));
+    return { done: all.filter(id => done[id]).length, total: all.length };
+  }
+
+  // small seeded random generator so the quiz is the same on every load
+  function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function makeQuiz(seed) {
+    const rand = rng(seed);
+    const pick = arr => arr[Math.floor(rand() * arr.length)];
+    const pool = [...CONCEPTS].sort(() => rand() - 0.5).slice(0, 5);
+    return pool.map(c => {
+      const p = pick(['aws', 'azure', 'gcp']);
+      const wrong = CONCEPTS.filter(x => x.id !== c.id).sort(() => rand() - 0.5).slice(0, 3).map(x => x.nimbus.name);
+      return { q: `Which Nimbus service matches ${c[p].name} (${PROVIDERS[p]})?`, answer: c.nimbus.name, options: [c.nimbus.name, ...wrong].sort(() => rand() - 0.5), chosen: null };
+    });
+  }
+
+  function renderOnboarding() {
+    const pr = progress();
+    const R = 34, C = 2 * Math.PI * R, share = pr.total ? pr.done / pr.total : 0;
+    if (!state.quiz) state.quiz = makeQuiz(20261020);
+    const done = taskState();
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Onboarding path</h1><p class="sub">A 30-day plan for ${ROLES[state.role]}s. Tasks link straight to the right tool or document.</p></div></div>
+      <div class="grid g-main-side">
+        <div class="card">
+          <div class="card-head">
+            <div class="ring-wrap">
+              <svg width="84" height="84" viewBox="0 0 84 84" role="img" aria-label="${pr.done} of ${pr.total} tasks done">
+                <circle cx="42" cy="42" r="${R}" fill="none" stroke="var(--surface-3)" stroke-width="8"/>
+                <circle cx="42" cy="42" r="${R}" fill="none" stroke="var(--primary-600)" stroke-width="8" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - share)}" transform="rotate(-90 42 42)"/>
+                <text x="42" y="47" text-anchor="middle" font-size="16" font-weight="700" fill="var(--text)">${pct(share)}</text>
+              </svg>
+              <div><h2>${pr.done} of ${pr.total} tasks done</h2><p>Day 9 of 30 · mentor check-in on Thursday</p></div>
+            </div>
+          </div>
+          <div class="card-body">
+            ${PATHS[state.role].map((w, wi) => `
+              <div class="week"><div class="week-head"><b>${w.week}</b><span class="small muted">${w.tasks.filter((_, ti) => done[`${state.role}-${wi}-${ti}`]).length}/${w.tasks.length}</span></div>
+                ${w.tasks.map(([t, href], ti) => { const id = `${state.role}-${wi}-${ti}`; return `
+                  <label class="task${done[id] ? ' done' : ''}"><input type="checkbox" data-id="${id}" ${done[id] ? 'checked' : ''}><span class="t">${esc(t)}</span>${href ? `<a class="link" href="${href}">Open ${icon('chevron', 'ic-sm')}</a>` : ''}</label>`; }).join('')}
+              </div>`).join('')}
+          </div>
+        </div>
+        <div class="stack">
+          <div class="card"><div class="card-head"><div><h2>Term of the day</h2><p>Click the card to flip it.</p></div><button class="btn btn-sm" id="nextTerm">Next ${icon('chevron', 'ic-sm')}</button></div>
+            <div class="card-body"><div class="flash" id="flash"></div></div></div>
+          <div class="card"><div class="card-head"><div><h2>Service-name quiz</h2><p>Five questions made from the glossary.</p></div><button class="btn btn-sm" id="newQuiz">${icon('refresh', 'ic-sm')} New quiz</button></div>
+            <div class="card-body" id="quiz"></div></div>
+        </div>
+      </div>`;
+    $$('.task input').forEach(cb => cb.addEventListener('change', () => {
+      taskState()[cb.dataset.id] = cb.checked;
+      store.set('tasks', state.tasks);
+      updateNavProgress();
+      renderOnboarding();
+    }));
+    $('#nextTerm').addEventListener('click', () => { state.flashIdx = (state.flashIdx + 1) % CONCEPTS.length; state.flashBack = false; drawFlash(); });
+    $('#flash').addEventListener('click', () => { state.flashBack = !state.flashBack; drawFlash(); });
+    $('#newQuiz').addEventListener('click', () => { state.quiz = makeQuiz(Date.now() & 0xffff); drawQuiz(); });
+    drawFlash();
+    drawQuiz();
+  }
+  function drawFlash() {
+    const c = CONCEPTS[state.flashIdx];
+    $('#flash').innerHTML = state.flashBack
+      ? `<span class="small muted">In Nimbus Cloud</span><div class="big">${esc(c.nimbus.name)}</div><p class="small">${esc(c.plain)}</p><p class="small muted">${esc(c.watch)}</p>`
+      : `<span class="small muted">${esc(c.category)}</span><div class="big">${esc(c.aws.name)}</div><p class="small muted">Azure: ${esc(c.azure.name)} · Google Cloud: ${esc(c.gcp.name)}</p><p class="small">What is it called at Nimbus?</p>`;
+  }
+  function drawQuiz() {
+    const quiz = state.quiz;
+    const answered = quiz.filter(x => x.chosen).length, right = quiz.filter(x => x.chosen === x.answer).length;
+    $('#quiz').innerHTML = quiz.map((x, qi) => `
+      <div style="margin-bottom:14px"><div class="quiz-q">${qi + 1}. ${esc(x.q)}</div><div class="quiz-opts">
+        ${x.options.map(o => `<button class="quiz-opt${x.chosen ? (o === x.answer ? ' right' : o === x.chosen ? ' wrong' : '') : ''}" data-q="${qi}" data-o="${esc(o)}" ${x.chosen ? 'disabled' : ''}>${esc(o)}</button>`).join('')}
+      </div></div>`).join('') + `<p class="small muted">${answered ? `Score: ${right} of ${answered}` : 'Pick an answer to start.'}</p>`;
+    $$('.quiz-opt').forEach(b => b.addEventListener('click', () => { quiz[+b.dataset.q].chosen = b.dataset.o; drawQuiz(); }));
+  }
+  function updateNavProgress() { const pr = progress(); $('#navProgress').textContent = `${pr.done}/${pr.total}`; }
+
+  /* =================================================================
+     Page 6. Evaluation: offline test on the demo question set
+     ================================================================= */
+  function renderEval(params) {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Evaluation</h1><p class="sub">An offline test of retrieval on ${TEST_SET.length} demo questions. Each question has one document that holds the answer.</p></div>
+        <div class="head-actions"><button class="btn btn-primary" id="runEval">${icon('play', 'ic-sm')} Run evaluation</button></div></div>
+      <div class="callout" style="margin-bottom:16px">${icon('info')}<div>${TEST_SET.filter(t => t.type === 'cross').length} questions use AWS, Azure or Google Cloud words (cross-vocabulary) and ${TEST_SET.filter(t => t.type === 'same').length} use Nimbus words (same-vocabulary). The set is small and synthetic, so it checks that the pipeline works; it is not proof of real-world accuracy.</div></div>
+      <div id="evalOut"><div class="card empty">${icon('chart')}<p style="margin-top:8px">Press “Run evaluation” to score the three retrieval settings.</p></div></div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><div><h2>Planned evaluation for the full system</h2><p>Each part is measured on its own, then the whole answer.</p></div></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Part</th><th>Metric</th><th>In plain words</th><th>Target</th></tr></thead><tbody>
+          <tr><td>Intent classifier</td><td>Macro F1</td><td>Is the question type right, averaged over all types?</td><td>≥ 0.90</td></tr>
+          <tr><td>Entity recogniser</td><td>Entity-level F1</td><td>Are product names found with the right label and edges?</td><td>≥ 0.92</td></tr>
+          <tr><td>Entity linking</td><td>Accuracy</td><td>Is each name tied to the right Nimbus concept?</td><td>≥ 0.95</td></tr>
+          <tr><td>Retrieval</td><td>Recall@5, MRR</td><td>Is the right document in the top 5, and how high?</td><td>≥ 0.90, ≥ 0.80</td></tr>
+          <tr><td>Answer</td><td>Faithfulness</td><td>Is every claim supported by the cited text?</td><td>≥ 0.95</td></tr>
+          <tr><td>Answer</td><td>Correctness (human review)</td><td>Would a senior engineer accept the answer?</td><td>≥ 85%</td></tr>
+          <tr><td>Safety</td><td>Abstain rate on unanswerable questions</td><td>Does it say “not found” instead of guessing?</td><td>≥ 90%</td></tr>
+          <tr><td>System</td><td>p95 latency</td><td>How long the slowest 5% of answers take</td><td>≤ 5 s</td></tr>
+        </tbody></table></div>
+      </div>`;
+    $('#runEval').addEventListener('click', () => { state.evalResult = E.evaluate(); drawEval(); toast('Evaluation finished'); });
+    if (params.get('run')) { history.replaceState(null, '', '#/eval'); state.evalResult = E.evaluate(); }
+    if (state.evalResult) drawEval();
+  }
+
+  function drawEval() {
+    const { rows, summary } = state.evalResult;
+    const [A, B, C] = summary;
+    const short = ['A · BM25 only', 'B · + linking & rewrite', 'C · + entity ranking'];
+    const tile = (label, value, hint) => `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
+    const rk = v => v === null ? '<span class="rank miss">miss</span>' : `<span class="rank${v === 1 ? ' r1' : ''}">${v}</span>`;
+    $('#evalOut').innerHTML = `
+      <div class="grid g-4" style="margin-bottom:16px">
+        ${tile('Cross-vocabulary Recall@1', `${fix(A.cross.r1, 2)} → ${fix(B.cross.r1, 2)}`, 'from A to B')}
+        ${tile('All questions Recall@3', `${fix(A.all.r3, 2)} → ${fix(C.all.r3, 2)}`, 'from A to C')}
+        ${tile('All questions MRR', `${fix(A.all.mrr, 2)} → ${fix(C.all.mrr, 2)}`, 'from A to C')}
+        ${tile('Test questions', TEST_SET.length, `${TEST_SET.filter(t => t.type === 'cross').length} cross · ${TEST_SET.filter(t => t.type === 'same').length} same vocabulary`)}
+      </div>
+      <div class="grid g-2">
+        <div class="card"><div class="card-head"><div><h2>Recall@1 by setting</h2><p>Share of questions where the right document is ranked first.</p></div></div>
+          <div class="card-body"><div class="legend" style="margin-bottom:8px"><span><i style="background:var(--series-1)"></i>Cross-vocabulary</span><span><i style="background:var(--series-2)"></i>Same-vocabulary</span></div>
+            <div class="chart-box" id="evalChart"></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>Summary table</h2><p>The same numbers as the chart, plus Recall@3 and MRR.</p></div></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>Setting</th><th class="num">R@1</th><th class="num">R@3</th><th class="num">MRR</th><th class="num">Cross R@1</th><th class="num">Same R@1</th></tr></thead><tbody>
+            ${summary.map((s, i) => `<tr><td>${short[i]}</td><td class="num">${fix(s.all.r1)}</td><td class="num">${fix(s.all.r3)}</td><td class="num">${fix(s.all.mrr)}</td><td class="num">${fix(s.cross.r1)}</td><td class="num">${fix(s.same.r1)}</td></tr>`).join('')}
+          </tbody></table></div>
+          <div class="card-body small muted">Recall@k: the right document is in the top k. MRR: the average of 1 / rank of the right document (1.0 = always first).</div></div>
+      </div>
+      <div class="card" style="margin-top:16px"><div class="card-head"><div><h2>Rank of the right document, per question</h2><p>“miss” means it did not appear at all.</p></div></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Question</th><th>Type</th><th>Answer in</th><th class="num">A</th><th class="num">B</th><th class="num">C</th></tr></thead><tbody>
+          ${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.q)}</td><td><span class="badge ${r.type === 'cross' ? 'badge-primary' : ''}">${r.type}</span></td><td>${r.gold}</td><td class="num">${rk(r.ranks.bm25)}</td><td class="num">${rk(r.ranks.rewrite)}</td><td class="num">${rk(r.ranks.full)}</td></tr>`).join('')}
+        </tbody></table></div></div>`;
+    drawBarChart($('#evalChart'), short, [
+      { name: 'Cross-vocabulary', color: 'var(--series-1)', values: summary.map(s => s.cross.r1) },
+      { name: 'Same-vocabulary', color: 'var(--series-2)', values: summary.map(s => s.same.r1) }
+    ]);
+  }
+
+  // Grouped bar chart in plain SVG with hover tooltips
+  function drawBarChart(el, groups, series) {
+    const W = 560, H = 250, m = { t: 22, r: 8, b: 34, l: 36 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const band = iw / groups.length, bw = 24, gap = 2;
+    const y = v => m.t + ih * (1 - v);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Recall at 1 by retrieval setting">`;
+    [0, 0.25, 0.5, 0.75, 1].forEach(t => { svg += `<line class="grid-line" x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}"/><g class="axis"><text x="${m.l - 8}" y="${y(t) + 4}" text-anchor="end">${t.toFixed(2)}</text></g>`; });
+    groups.forEach((g, gi) => {
+      const x0 = m.l + gi * band + band / 2 - (series.length * bw + (series.length - 1) * gap) / 2;
+      series.forEach((s, si) => {
+        const v = s.values[gi], x = x0 + si * (bw + gap), top = y(v), base = y(0), r = Math.min(4, base - top);
+        const d = `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${base} Z`;
+        svg += `<path d="${d}" fill="${s.color}"/><rect x="${x - 6}" y="${m.t}" width="${bw + 12}" height="${ih}" fill="transparent" data-tip="${esc(g)} · ${esc(s.name)}: ${v.toFixed(3)}"/>`;
+        svg += `<text class="val" x="${x + bw / 2}" y="${top - 6}" text-anchor="middle">${v.toFixed(2)}</text>`;
+      });
+      svg += `<g class="axis"><text x="${m.l + gi * band + band / 2}" y="${H - 10}" text-anchor="middle">${esc(g)}</text></g>`;
+    });
+    el.innerHTML = svg + '</svg><div class="chart-tip"></div>';
+    const tip = el.querySelector('.chart-tip');
+    el.querySelectorAll('[data-tip]').forEach(rect => {
+      rect.addEventListener('mousemove', e => {
+        const b = el.getBoundingClientRect();
+        tip.textContent = rect.dataset.tip;
+        tip.style.left = `${Math.min(e.clientX - b.left + 12, b.width - tip.offsetWidth - 4)}px`;
+        tip.style.top = `${e.clientY - b.top - 34}px`;
+        tip.style.opacity = 1;
+      });
+      rect.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
+    });
+  }
+
+  /* =================================================================
+     Page 7. Trust & Safety: guardrails, model card, audit log
+     ================================================================= */
+  // A few typical questions, so the audit log can be shown before anyone has asked
+  const SAMPLE_SESSION = ['What is our equivalent of an AWS EC2 m5.2xlarge?', 'Do we have something like S3 Glacier for cheap archive?', 'How much does a Redshift node cost in Nimbus?', 'How much POC credit can a new customer get?'];
+
+  function renderTrust(params) {
+    if (params && params.get('demo') && !state.audit.length) { SAMPLE_SESSION.forEach(q => ask(q, true)); state.chat[0].feedback = 'up'; state.audit[state.audit.length - 1].feedback = 'up'; history.replaceState(null, '', '#/trust'); }
+    const S = state.settings;
+    const setting = (key, title, desc, locked) => `
+      <div class="setting"><div><div class="t">${title}${locked ? ` <span class="badge badge-outline">${icon('lock', 'ic-sm')} policy</span>` : ''}</div><div class="d">${desc}</div></div>
+        <label class="toggle"><input type="checkbox" data-key="${key}" ${locked || S[key] ? 'checked' : ''} ${locked ? 'disabled' : ''} aria-label="${title}"><span></span></label></div>`;
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Trust &amp; Safety</h1><p class="sub">The rules that keep answers grounded, private and fair. Changes apply to new questions on the Ask page.</p></div></div>
+      <div class="grid g-2">
+        <div class="card"><div class="card-head"><div><h2>Guardrails</h2><p>Switch a rule off to see what changes in the trace.</p></div></div>
+          <div class="card-body" style="padding-top:4px;padding-bottom:4px">
+            ${setting('grounded', 'Answer only from sources', 'If the evidence is weak or a price is missing, say so instead of guessing.')}
+            ${setting('numberCheck', 'Check numbers against sources', 'Every number in an answer must appear in a cited document or the question.')}
+            ${setting('roleFilter', 'Role-based access filter', 'Chunks a role may not read are removed before search, not after.')}
+            ${setting('freshness', 'Show source dates and age warnings', `Sources older than ${E.STALE_DAYS} days are flagged so people check them.`)}
+            ${setting('redact', 'Redact personal data before indexing', 'E-mails, phone numbers, keys and names are replaced with tags.', true)}
+            ${setting('local', 'Keep data inside the company network', 'All models run on internal servers. No document text is sent to outside APIs.', true)}
+          </div></div>
+        <div class="card"><div class="card-head"><div><h2>Model and data card</h2><p>What runs where, and why it was chosen.</p></div></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>Part</th><th>Model or method</th><th>Why</th></tr></thead><tbody>
+            <tr><td>Intent</td><td>DistilBERT, fine-tuned</td><td>Small and fast; good enough for 6 classes</td></tr>
+            <tr><td>Entities</td><td>spaCy EntityRuler + BERT NER</td><td>Rules are exact for known names; the model finds new ones</td></tr>
+            <tr><td>Embeddings</td><td>bge-small-en-v1.5</td><td>Strong retrieval for its size; runs on CPU</td></tr>
+            <tr><td>Keyword search</td><td>BM25</td><td>Exact matches for codes like nx-gp3-8x32</td></tr>
+            <tr><td>Reranker</td><td>bge-reranker-base</td><td>Reads question and chunk together for a better order</td></tr>
+            <tr><td>Generator</td><td>Llama 3.1 8B Instruct</td><td>Open weights, so it can run on internal GPUs</td></tr>
+            <tr><td>Redaction</td><td>Presidio + rules</td><td>Removes personal data before indexing</td></tr>
+          </tbody></table></div></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-head"><div><h2>Audit log (this session)</h2><p>Stored with a pseudonymous ID, kept 30 days, used only to improve answers, never for performance reviews.</p></div>${state.audit.length ? `<span class="badge">${state.audit.length} entries</span>` : `<button class="btn btn-sm" id="loadDemo">${icon('play', 'ic-sm')} Load sample session</button>`}</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>User</th><th>Role</th><th>Question (redacted)</th><th>Intent</th><th>Sources</th><th>Confidence</th><th>Feedback</th></tr></thead><tbody>
+          ${state.audit.length ? state.audit.map(a => `<tr><td class="small">${a.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td><td class="mono small">${USER_ID}</td><td class="small">${ROLES[a.role]}</td><td>${esc(a.q)}</td><td class="small">${a.intent}</td><td class="small">${a.sources.join(', ') || '–'}</td><td class="small">${a.confidence}</td><td class="small">${a.feedback === 'up' ? 'Helpful' : a.feedback === 'down' ? 'Not helpful' : '–'}</td></tr>`).join('')
+            : '<tr><td colspan="8" class="empty">No questions yet in this session. Ask something on the Ask page.</td></tr>'}
+        </tbody></table></div>
+      </div>
+      <div class="card" style="margin-top:16px"><div class="card-head"><div><h2>Known limits of this prototype</h2></div></div>
+        <div class="card-body small" style="line-height:1.7">
+          All documents are synthetic, and Nimbus Cloud is a fictional provider. The intent model is a keyword stand-in, answers are written by templates, and dense retrieval and reranking are not run in the browser. Spec matching only compares vCPU, memory and GPU count; it does not compare CPU generation, network or disk speed.
+        </div></div>`;
+    if ($('#loadDemo')) $('#loadDemo').addEventListener('click', () => renderTrust(new URLSearchParams('demo=1')));
+    $$('.setting input[data-key]').forEach(cb => cb.addEventListener('change', () => {
+      state.settings[cb.dataset.key] = cb.checked;
+      store.set('settings', state.settings);
+      toast(`${cb.closest('.setting').querySelector('.t').textContent.trim()}: ${cb.checked ? 'on' : 'off'}`);
+    }));
+  }
+
+  /* =================================================================
+     Shell: routing, role switcher, theme, global search
+     ================================================================= */
+  const PAGES = { ask: renderAsk, translator: renderTranslator, spec: renderSpec, kb: renderKB, onboarding: renderOnboarding, eval: renderEval, trust: renderTrust };
+  function route() {
+    const h = location.hash.replace(/^#\/?/, '');
+    const [name, qs] = h.split('?');
+    const page = PAGES[name] ? name : 'ask';
+    state.page = page;
+    $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.page === page));
+    $('#sidebar').classList.remove('open');
+    PAGES[page](new URLSearchParams(qs || ''));
+    window.scrollTo(0, 0);
+  }
+
+  function init() {
+    $('#indexInfo').textContent = `${E.INDEX.chunks.length} chunks · built ${E.INDEX_DATE}`;
+    $('#roleSel').value = state.role;
+    $('#roleSel').addEventListener('change', e => {
+      state.role = e.target.value;
+      store.set('role', state.role);
+      updateNavProgress();
+      toast(`Viewing as ${ROLES[state.role]}. Search follows this role’s access rules.`);
+      if (state.page !== 'ask') route(); else renderTrace();
+    });
+    $('#globalSearch').addEventListener('submit', e => {
+      e.preventDefault();
+      const q = $('#globalInput').value.trim();
+      if (!q) return;
+      $('#globalInput').value = '';
+      if (state.page === 'ask') ask(q); else location.hash = '#/ask?q=' + encodeURIComponent(q);
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName)) { e.preventDefault(); $('#globalInput').focus(); }
+    });
+    const saved = store.get('theme', null);
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    const isDark = () => document.documentElement.getAttribute('data-theme') === 'dark' ||
+      (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const themeIcon = () => { $('#themeBtn').innerHTML = icon(isDark() ? 'sun' : 'moon'); };
+    themeIcon();
+    $('#themeBtn').addEventListener('click', () => {
+      const next = isDark() ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      store.set('theme', next);
+      themeIcon();
+    });
+    $('#menuBtn').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+    updateNavProgress();
+    window.addEventListener('hashchange', route);
+    route();
+  }
+  init();
+})();
+</script>
+</body>
+</html>
